@@ -1,0 +1,68 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtualenvs / env files
+.venv/
+venv/
+env/
+ENV/
+.env
+.env.*
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# PIP Cache
+pip-wheel-metadata/
+pip-log.txt
+
+# Jupyter
+.ipynb_checkpoints
+
+# VS Code / JetBrains
+.vscode/
+.idea/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and DBs
+*.log
+*.sqlite3
+*.db
+
+# Test / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data / outputs / large files
+data/
+data_raw/
+outputs/
+models/
+checkpoints/
+*.nc
+*.nc4
+*.h5
+*.pt
+
+# Secrets / keys / certificates
+*.pem
+*.key
+*.crt
+*.p12
+
+# Docker overrides
+docker-compose.override.yml
+
+# Misc
+*.pyc
+*.pyo
+*.pyd
