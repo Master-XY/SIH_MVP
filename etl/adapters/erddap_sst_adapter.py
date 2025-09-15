@@ -1,32 +1,54 @@
 # etl/adapters/erddap_sst_adapter.py
-from erddapy import ERDDAP
-import pandas as pd
-from datetime import date
+"""
+Simple ERDDAP SST adapter.
+Prefer 'erddapy' if available; fallback to building a CSV subset URL.
+This code is adaptable but minimal and intended for demo usage.
+"""
 import logging
+import datetime
+import pandas as pd
 
-def fetch_oisst_timeseries(erddap_server: str, dataset_id: str, minlat, maxlat, minlon, maxlon, start=None, end=None):
+logger = logging.getLogger("erddap_sst_adapter")
+
+try:
+    from erddapy import ERDDAP
+    ERDDAP_AVAILABLE = True
+except Exception:
+    ERDDAP_AVAILABLE = False
+
+def fetch_oisst_timeseries(erddap_server: str, dataset_id: str, minlat: float, maxlat: float,
+                           minlon: float, maxlon: float, start: str = None, end: str = None):
     """
-    Uses erddapy to fetch SST time series over a bbox and time window.
-    erddap_server e.g. 'https://www.ncei.noaa.gov/erddap'
-    dataset_id example: 'ncdc_oisst_v2_avhrr_by_time_zlev_lat_lon' (server-specific). :contentReference[oaicite:8]{index=8}
+    Fetch SST timeseries using erddapy if installed.
+    Returns a pandas DataFrame (index=time) or None.
+    Example:
+        fetch_oisst_timeseries("https://www.ncei.noaa.gov/erddap", "ncdc_oisst_avhrr", 6,24,66,92)
     """
-    e = ERDDAP(server=erddap_server)
-    e.dataset_id = dataset_id
-    # constraints: ERDDAP expects variable names and constraints - server/dataset specific
-    start = start or (date.today() - pd.Timedelta(days=30)).isoformat()
-    end = end or date.today().isoformat()
-    # 'time' variable and lat/lon variable names depend on dataset; common names are 'time','latitude','longitude'
-    e.constraints = {
-        "time": f"{start}/{end}",
-        "latitude": f"{minlat}:{maxlat}",
-        "longitude": f"{minlon}:{maxlon}"
-    }
-    # choose the variable(s) to retrieve (commonly 'sst' or 'temp')
-    # often one must consult dataset metadata to set variables
-    e.variables = ["sst"]
-    try:
-        df = e.to_pandas(index_col="time", parse_dates=True)
-        return df
-    except Exception as exc:
-        logging.error("erddap fetch error: %s", exc)
+    start = start or (datetime.date.today() - datetime.timedelta(days=30)).isoformat()
+    end = end or datetime.date.today().isoformat()
+
+    if ERDDAP_AVAILABLE:
+        try:
+            e = ERDDAP(server=erddap_server, protocol="tabledap")
+            e.dataset_id = dataset_id
+            # constraints will depend on dataset variable names: 'time','latitude','longitude' are common
+            e.constraints = {
+                "time": f"{start}/{end}",
+                "latitude": f"{minlat}:{maxlat}",
+                "longitude": f"{minlon}:{maxlon}"
+            }
+            # common variable name for SST is 'sst' but varies by dataset
+            try:
+                e.variables = ["sst"]
+            except Exception:
+                # leave variables default
+                pass
+            df = e.to_pandas()
+            logger.info("Fetched ERDDAP data shape: %s", getattr(df, "shape", None))
+            return df
+        except Exception as e:
+            logger.exception("erddapy fetch error: %s", e)
+            return None
+    else:
+        logger.warning("erddapy not available. Install 'erddapy' for full functionality.")
         return None

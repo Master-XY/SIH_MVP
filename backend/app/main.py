@@ -13,9 +13,22 @@ from .db import SessionLocal, engine, Base
 from . import models
 from .inference import save_upload, predict_otolith_stub
 from .alerts import create_advisory_pdf
+from app import alerts
 
 # create tables
 Base.metadata.create_all(bind=engine)
+
+# Create FastAPI instance
+app = FastAPI(title="SIH MVP API", version="1.0")
+
+# Register routers
+app.include_router(alerts.router, prefix="/api/v1")
+
+# Root endpoint
+@app.get("/")
+def root():
+    return {"message": "SIH MVP backend is running 🚀"}
+app.include_router(alerts.router)
 
 app = FastAPI(title="SIH MVP Backend", version="0.1.0")
 

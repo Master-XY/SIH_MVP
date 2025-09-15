@@ -1,21 +1,42 @@
 # etl/qc_provenance.py
-import hashlib, json, datetime
-from typing import Dict, Any, List
+"""
+QC and provenance helpers for ETL adapters.
+Provides:
+- make_provenance(source_name, raw_ref, transform_version)
+- record_hash(record)
+- qc_checks_occurrence(record)
+"""
+import hashlib
+import json
+import datetime
+import logging
 
-def make_provenance(source_name: str, raw_ref: str, transform_version: str="v0.1") -> Dict[str, Any]:
+logger = logging.getLogger("qc_provenance")
+
+
+def make_provenance(source_name: str, raw_ref: str, transform_version: str = "v0.1"):
+    """Return a small provenance dict describing the fetch/transform."""
     return {
         "source_name": source_name,
         "fetch_time": datetime.datetime.utcnow().isoformat(),
-        "raw_ref": raw_ref,          # e.g. URL or objectstore path
-        "transform_version": transform_version
+        "raw_ref": raw_ref,
+        "transform_version": transform_version,
     }
 
-def record_hash(record: Dict[str,Any]) -> str:
+
+def record_hash(record: dict) -> str:
+    """Return a stable hash for a record (useful as occurrenceID fallback)."""
     s = json.dumps(record, sort_keys=True, default=str)
     return hashlib.sha1(s.encode("utf-8")).hexdigest()
 
-def qc_checks_occurrence(rec: Dict[str,Any]) -> List[str]:
+
+def qc_checks_occurrence(rec: dict):
+    """
+    Basic QC checks for an occurrence-like record.
+    Returns a list of QC flags (empty==OK).
+    """
     flags = []
+    # coordinates
     try:
         lat = float(rec.get("decimalLatitude") or rec.get("lat") or 0)
         lon = float(rec.get("decimalLongitude") or rec.get("lon") or 0)
@@ -24,16 +45,21 @@ def qc_checks_occurrence(rec: Dict[str,Any]) -> List[str]:
     except Exception:
         flags.append("missing_coords")
 
-    d = rec.get("eventDate") or rec.get("date") or None
-    if d:
+    # date
+    if rec.get("eventDate") or rec.get("date"):
+        d = rec.get("eventDate") or rec.get("date")
         try:
-            # accept ISO or common formats
-            from dateutil import parser
-            parser.parse(d)
+            # try ISO parse
+            datetime.datetime.fromisoformat(d)
         except Exception:
-            flags.append("bad_date")
+            # fallback: we accept it but flag it
+            flags.append("bad_date_format")
     else:
         flags.append("missing_date")
 
-    # add domain-specific checks later (SST ranges, salinity).
+    # basic domain checks (extend later)
+    # example: check unrealistic depth / temperature ranges here
+
+    if flags:
+        logger.debug("QC flags for record: %s", flags)
     return flags

@@ -1,33 +1,57 @@
 # etl/adapters/ais_streamer.py
-from websocket import WebSocketApp
+"""
+Lightweight AIS streamer skeleton.
+This file provides a WebSocket client hook and an on_message example.
+Provider-specific details will differ (NMEA vs JSON).
+"""
 import logging
-from pyais import decode as ais_decode
 import json
+import threading
 import time
-import requests
+try:
+    from websocket import WebSocketApp
+    WEBSOCKET_AVAILABLE = True
+except Exception:
+    WEBSOCKET_AVAILABLE = False
 
-# Example websocket: 'wss://aisstream.io/...' (check provider docs)
-def on_message(ws, message):
+logger = logging.getLogger("ais_streamer")
+
+def on_message_example(message: str):
+    """
+    A generic handler to parse and print AIS messages.
+    Real parsing requires provider format knowledge or pyais.
+    """
     try:
-        # message is often a JSON wrapper or raw NMEA; provider varies
-        # Example: if message contains 'nmea' field
-        obj = json.loads(message)
-        nmea = obj.get("nmea") or obj.get("payload") or message
-        parsed = ais_decode(nmea)
-        # parsed is a dict-like object - map fields you care about
-        data = {
-            "mmsi": parsed.get("mmsi"),
-            "lat": parsed.get("y"),
-            "lon": parsed.get("x"),
-            "sog": parsed.get("speed_over_ground"),
-            "course": parsed.get("course")
-        }
-        # push to backend alerts or AIS ingestion endpoint
-        # requests.post("http://127.0.0.1:8000/api/v1/ais", json=data)
-        logging.info("AIS: %s", data)
-    except Exception as e:
-        logging.exception("Failed to parse AIS message: %s", e)
+        obj = None
+        try:
+            obj = json.loads(message)
+        except Exception:
+            pass
+        logger.info("AIS raw: %s", obj or message[:200])
+    except Exception:
+        logger.exception("Failed to handle AIS message")
 
-def start_ais_stream(ws_url):
-    ws = WebSocketApp(ws_url, on_message=on_message)
+def start_ais_stream(ws_url: str):
+    if not WEBSOCKET_AVAILABLE:
+        logger.error("websocket-client not installed. install websocket-client to use AIS streamer.")
+        return
+
+    def on_message(ws, message):
+        try:
+            on_message_example(message)
+        except Exception:
+            logger.exception("message handler error")
+
+    def on_error(ws, error):
+        logger.error("AIS websocket error: %s", error)
+
+    def on_close(ws, close_status_code, close_msg):
+        logger.warning("AIS websocket closed: %s %s", close_status_code, close_msg)
+
+    def on_open(ws):
+        logger.info("AIS websocket opened")
+
+    ws = WebSocketApp(ws_url, on_open=on_open, on_message=on_message, on_error=on_error, on_close=on_close)
+    # run in current thread (blocking) — caller can spawn a thread if needed
     ws.run_forever()
+
