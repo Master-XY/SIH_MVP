@@ -1,28 +1,27 @@
 # frontend/pages/3_alerts.py
-import streamlit as st
-import pandas as pd
-from datetime import datetime
-from typing import List, Dict
 from io import BytesIO
-
-import sys, os
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from frontend import backend_client
-
+from typing import List, Dict
+import streamlit as st
 import folium
 from folium.plugins import MarkerCluster
 from streamlit_folium import st_folium
+from datetime import datetime , timezone
+
+# Absolute imports
+from frontend import backend_client
 
 # ----------------------------
-# Synthetic fallback alerts
+# Synthetic alerts fallback
 # ----------------------------
 def synthetic_alerts() -> List[Dict]:
-    now = datetime.utcnow().isoformat()
+    now = datetime.now(timezone.utc).isoformat()
     return [
-        {"id": 1, "type": "SST anomaly", "status": "active", "message": "SST +2.1°C above climatology",
-         "time": now, "lat": 16.5, "lon": 72.3, "sst": None, "chl": None},
-        {"id": 2, "type": "HAB-like", "status": "resolved", "message": "Chl spike observed",
-         "time": now, "lat": 18.7, "lon": 82.1, "sst": None, "chl": None},
+        {"id": 1, "type": "SST anomaly", "status": "active",
+         "message": "SST +2.1°C above climatology", "time": now,
+         "lat": 16.5, "lon": 72.3, "sst": None, "chl": None},
+        {"id": 2, "type": "HAB-like", "status": "resolved",
+         "message": "Chl spike observed", "time": now,
+         "lat": 18.7, "lon": 82.1, "sst": None, "chl": None},
     ]
 
 # ----------------------------
@@ -96,9 +95,11 @@ for a in alerts:
     st.markdown(f"**{a.get('type')}** ({a.get('status')}) - {a.get('message')}")
     pdf_file = download_alert_pdf(a["id"])
     if pdf_file:
-        st.download_button(f"Download PDF for alert {a['id']}", pdf_file, file_name=f"alert_{a['id']}.pdf")
+        st.download_button(f"Download PDF for alert {a['id']}", pdf_file,
+                           file_name=f"alert_{a['id']}.pdf")
     if st.button(f"Send notification for alert {a['id']}", key=f"notify_{a['id']}"):
-        res = send_alert_notification(a["id"], channels=["email"], targets={"admin": "admin@example.com"})
+        res = send_alert_notification(a["id"], channels=["email"],
+                                      targets={"admin": "admin@example.com"})
         st.write(res)
 
 st.subheader("Alerts Map")

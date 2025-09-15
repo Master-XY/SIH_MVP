@@ -2,12 +2,21 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from backend.app.db import get_db
-from . import models
+from backend.app.models import models
 import pandas as pd
 import io
 import xarray as xr
 from datetime import datetime
 from typing import Optional, List, Dict
+import sys
+from pathlib import Path
+
+# Add project root to sys.path
+project_root = Path(__file__).parents[1]  # Goes up from pages/ to SIH_MVP/
+sys.path.append(str(project_root))
+
+from backend.app.db import get_db
+
 
 router = APIRouter(tags=["measurements"], prefix="/measurements")
 
