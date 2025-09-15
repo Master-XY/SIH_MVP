@@ -43,3 +43,16 @@ prefect==2.19.9
 # Testing
 pytest==8.3.3
 httpx==0.27.2
+
+requests
+pandas
+xarray
+netcdf4
+erddapy        # optional but much easier for ERDDAP
+python-dotenv
+beautifulsoup4
+websocket-client
+pyais          # parse AIS NMEA/AIVDM
+prefect        # lightweight orchestration
+boto3          # S3 / MinIO object store (optional)
+minio          # if you prefer MinIO client
