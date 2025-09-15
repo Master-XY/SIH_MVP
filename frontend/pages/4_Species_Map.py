@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
-import backend_client
+from frontend import backend_client
 
 
 st.set_page_config(page_title="Species / Occurrences", layout="wide")
