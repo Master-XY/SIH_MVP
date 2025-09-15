@@ -1,200 +1,104 @@
-import os
-import io
-import pandas as pd
+# frontend/pages/3_alerts.py
 import streamlit as st
-from datetime import datetime, date, timedelta
-import numpy as np
-import sys
+import pandas as pd
+from datetime import datetime
+from typing import List, Dict
+from io import BytesIO
+
+import sys, os
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from frontend import backend_client
 
-# try to use folium map if available for nicer markers
-try:
-    import folium
-    from folium.plugins import MarkerCluster
-    from streamlit_folium import st_folium
-    FOLIUM_AVAILABLE = True
-except Exception:
-    FOLIUM_AVAILABLE = False
+import folium
+from folium.plugins import MarkerCluster
+from streamlit_folium import st_folium
 
-st.set_page_config(page_title="Alerts & Advisories", layout="wide")
+# ----------------------------
+# Synthetic fallback alerts
+# ----------------------------
+def synthetic_alerts() -> List[Dict]:
+    now = datetime.utcnow().isoformat()
+    return [
+        {"id": 1, "type": "SST anomaly", "status": "active", "message": "SST +2.1°C above climatology", "time": now, "lat": 16.5, "lon": 72.3},
+        {"id": 2, "type": "HAB-like", "status": "resolved", "message": "Chl spike observed", "time": now, "lat": 18.7, "lon": 82.1},
+    ]
 
-# ----------------------
-# Helpers
-# ----------------------
-
-@st.cache_data(ttl=30)
-def fetch_alerts_from_backend():
+# ----------------------------
+# Fetch alerts
+# ----------------------------
+@st.cache_data(ttl=120)
+def fetch_alerts() -> List[Dict]:
     try:
         res = backend_client.fetch_alerts(limit=50)
-        if isinstance(res, dict) and "alerts" in res:
-            return res["alerts"] or []
-        elif isinstance(res, list):
-            return res
-        else:
-            return res or []
     except Exception as e:
-        st.warning("Could not fetch alerts: " + str(e))
-        return []
+        st.error(f"Failed to fetch alerts: {e}")
+        res = None
 
+    if not res:
+        return synthetic_alerts()
+    if isinstance(res, dict) and "alerts" in res:
+        return res["alerts"]
+    if isinstance(res, list):
+        return res
+    return []
 
-def synthetic_measurements(n_days: int = 90):
-    now = datetime.utcnow()
-    dates = [now - timedelta(days=i) for i in range(n_days)]
-    dates.reverse()
-    sst = 27 + 0.5*np.sin(np.linspace(0, 4*np.pi, n_days)) + np.random.normal(0, 0.3, n_days)
-    chl = 0.3 + 0.1*np.sin(np.linspace(0, 2*np.pi, n_days)) + np.random.normal(0, 0.05, n_days)
-    return pd.DataFrame({"ts": dates, "sst": sst, "chl": chl})
-
-
-def run_detector(payload: dict = None):
+# ----------------------------
+# Download PDF
+# ----------------------------
+def download_alert_pdf(alert_id: int) -> BytesIO:
     try:
-        return backend_client.run_detector(payload or {})
+        pdf_bytes = backend_client.download_alert_pdf_bytes(alert_id)
     except Exception as e:
-        return {"error": str(e)}
+        st.error(f"Failed to download PDF: {e}")
+        pdf_bytes = None
 
+    if pdf_bytes:
+        return BytesIO(pdf_bytes)
+    return None
 
-def download_pdf_bytes(alert_id: int):
+# ----------------------------
+# Send notification
+# ----------------------------
+def send_alert_notification(alert_id: int, channels: List[str], targets: Dict):
     try:
-        return backend_client.download_alert_pdf_bytes(alert_id)
-    except Exception:
-        return None
-
-
-def send_notify(alert_id: int, channels: list, targets: dict):
-    try:
-        return backend_client.send_notify(alert_id, channels, targets)
+        res = backend_client.send_notify(alert_id, channels, targets)
     except Exception as e:
-        return {"error": str(e)}
+        st.error(f"Notification failed: {e}")
+        res = {"error": str(e)}
+    return res
 
+# ----------------------------
+# Map creation
+# ----------------------------
+def create_map(alerts: List[Dict], center=(9.9, 76.6), zoom_start: int = 5):
+    m = folium.Map(location=center, zoom_start=zoom_start, tiles="cartodbpositron")
+    cluster = MarkerCluster().add_to(m)
 
-def parse_iso(dt_str):
-    if not dt_str:
-        return None
-    try:
-        if dt_str.endswith("Z"):
-            dt_str = dt_str[:-1]
-        return datetime.fromisoformat(dt_str)
-    except Exception:
-        try:
-            return datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-        except Exception:
-            return None
-
-
-def geodf_from_alerts(alerts):
-    rows = []
     for a in alerts:
-        try:
-            lat = float(a.get("lat") or a.get("latitude") or a.get("decimalLatitude") or None)
-            lon = float(a.get("lon") or a.get("longitude") or a.get("decimalLongitude") or None)
-        except Exception:
-            lat = lon = None
-        rows.append({
-            "id": a.get("id"),
-            "type": a.get("type"),
-            "status": a.get("status"),
-            "message": a.get("message"),
-            "created_at": a.get("created_at") or a.get("time") or a.get("timestamp"),
-            "sst": a.get("sst"),
-            "chl": a.get("chl"),
-            "lat": lat,
-            "lon": lon,
-            "notified": a.get("notified", False)
-        })
-    return pd.DataFrame(rows)
+        lat, lon = a.get("lat"), a.get("lon")
+        if lat is None or lon is None:
+            continue
+        popup_html = f"<b>{a.get('type')}</b><br>Status: {a.get('status')}<br>Message: {a.get('message')}"
+        folium.Marker([lat, lon], popup=popup_html).add_to(cluster)
+    return m
 
-# ----------------------
-# UI
-# ----------------------
-st.title("🚨 Alerts & Advisories — Demo")
+# ----------------------------
+# Page UI
+# ----------------------------
+st.set_page_config(page_title="Alerts", layout="wide")
+st.title("Anomaly Alerts")
 
-# Top controls
-with st.container():
-    c1, c2, c3, c4 = st.columns([1, 1, 1, 2])
-    with c1:
-        if st.button("🔄 Refresh alerts"):
-            fetch_alerts_from_backend.clear()
-    with c2:
-        with st.expander("Run anomaly detector (simulate)"):
-            sim_sst = st.number_input("SST (°C) — optional", value=None, step=0.1, format="%.2f")
-            sim_chl = st.number_input("Chlorophyll — optional", value=None, step=0.01, format="%.2f")
-            sim_lat = st.text_input("Lat (optional)", value="12.9")
-            sim_lon = st.text_input("Lon (optional)", value="77.6")
-            if st.button("Run detector now"):
-                payload = {}
-                if sim_sst not in (None, ""):
-                    payload["sst"] = float(sim_sst)
-                if sim_chl not in (None, ""):
-                    payload["chl"] = float(sim_chl)
-                if sim_lat:
-                    payload["lat"] = sim_lat
-                if sim_lon:
-                    payload["lon"] = sim_lon
-                res = run_detector(payload)
-                st.json(res)
-                fetch_alerts_from_backend.clear()
-    with c3:
-        if st.button("Export alerts CSV"):
-            alerts_list = fetch_alerts_from_backend()
-            df = geodf_from_alerts(alerts_list)
-            csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button("Download CSV", data=csv, file_name="alerts_export.csv", mime="text/csv")
-    with c4:
-        st.caption("Using backend_client")
+alerts = fetch_alerts()
+st.subheader("Active Alerts List")
+for a in alerts:
+    st.markdown(f"**{a.get('type')}** ({a.get('status')}) - {a.get('message')}")
+    pdf_file = download_alert_pdf(a["id"])
+    if pdf_file:
+        st.download_button(f"Download PDF for alert {a['id']}", pdf_file, file_name=f"alert_{a['id']}.pdf")
+    if st.button(f"Send notification for alert {a['id']}", key=f"notify_{a['id']}"):
+        res = send_alert_notification(a["id"], channels=["email"], targets={"admin": "admin@example.com"})
+        st.write(res)
 
-# Load alerts
-alerts_list = fetch_alerts_from_backend()
-df_alerts = geodf_from_alerts(alerts_list)
-
-# Metrics
-total = len(df_alerts)
-active = int(df_alerts["status"].str.lower().eq("active").sum()) if "status" in df_alerts.columns else 0
-notified = int(df_alerts["notified"].astype(bool).sum()) if "notified" in df_alerts.columns else 0
-colm = st.columns(3)
-colm[0].metric("Total alerts", total)
-colm[1].metric("Active", active)
-colm[2].metric("Notified", notified)
-
-# Map
-st.markdown("### Map — Alert locations")
-if not df_alerts.empty and df_alerts[["lat", "lon"]].notnull().any().any():
-    if FOLIUM_AVAILABLE:
-        center = [df_alerts["lat"].dropna().mean(), df_alerts["lon"].dropna().mean()]
-        m = folium.Map(location=center, zoom_start=6, tiles="cartodbpositron")
-        mc = MarkerCluster().add_to(m)
-        for _, r in df_alerts.iterrows():
-            if pd.notna(r["lat"]) and pd.notna(r["lon"]):
-                color = "red" if str(r.get("status","")).lower() == "active" else "orange"
-                popup = f"<b>{r.get('type')}</b><br/>{r.get('message')}<br/>SST: {r.get('sst')} Chl: {r.get('chl')}"
-                folium.CircleMarker([r["lat"], r["lon"]], radius=7, color=color, fill=True, fillOpacity=0.7, popup=popup).add_to(mc)
-        st_folium(m, width=900, height=400)
-    else:
-        map_df = df_alerts.dropna(subset=["lat","lon"])[["lat","lon"]].rename(columns={"lat":"latitude","lon":"longitude"})
-        st.map(map_df)
-else:
-    st.info("No geolocated alerts to map (or no alerts match filters).")
-
-# Demo/Live toggle
-mode = st.radio("Mode", ["Demo (synthetic)", "Live (backend)"], horizontal=True)
-use_demo = (mode == "Demo (synthetic)")
-
-# Fetch measurements
-if use_demo:
-    df_meas = synthetic_measurements()
-else:
-    try:
-        meas = backend_client.get_recent_measurements(limit=500)
-        df_meas = pd.DataFrame(meas)
-    except Exception:
-        st.warning("Failed to reach backend; using demo data")
-        df_meas = synthetic_measurements()
-
-# Plot
-if not df_meas.empty:
-    df_meas['ts'] = pd.to_datetime(df_meas.get('timestamp'))
-    df_meas = df_meas.sort_values('ts')
-    df_meas['sst_roll'] = df_meas['sst'].rolling(7, min_periods=1).mean()
-    import plotly.express as px
-    fig = px.line(df_meas, x='ts', y=['sst','sst_roll'], labels={'value':'SST (°C)','ts':'time'}, title="SST timeseries")
-    st.plotly_chart(fig, use_container_width=True)
+st.subheader("Alerts Map")
+map_obj = create_map(alerts)
+st_folium(map_obj, width=800, height=500)

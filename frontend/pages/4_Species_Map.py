@@ -1,108 +1,141 @@
-import os
-import streamlit as st
+# backend/app/measurements.py
+from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
+from sqlalchemy.orm import Session
+from .db import get_db
+from . import models
 import pandas as pd
-from datetime import datetime, timedelta
-import sys
-sys.path.append(os.path.dirname(os.path.dirname(__file__)))
-from frontend import backend_client
+import io
+import xarray as xr
+from datetime import datetime
+from typing import Optional, List, Dict
 
-st.set_page_config(page_title="Species / Occurrences", layout="wide")
+router = APIRouter(tags=["measurements"], prefix="/measurements")
 
-try:
-    import folium
-    from folium.plugins import MarkerCluster, HeatMap
-    from streamlit_folium import st_folium
-    FOLIUM = True
-except Exception:
-    FOLIUM = False
 
-# ------------------------
-# Helpers
-# ------------------------
-@st.cache_data(ttl=60)
-def load_occurrences(limit=500, date_from=None, date_to=None):
+@router.get("/recent")
+def get_recent_measurements(limit: int = Query(200), db: Session = Depends(get_db)) -> List[Dict]:
+    """
+    Return latest measurements (SST, Chl) up to `limit` records.
+    """
+    rows = db.query(models.Measurement).order_by(models.Measurement.id.desc()).limit(limit).all()
+    out = []
+    for r in rows:
+        out.append({
+            "sst": r.sst,
+            "chl": r.chl,
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "lat": float(r.lat) if r.lat else None,
+            "lon": float(r.lon) if r.lon else None
+        })
+    return out
+
+
+@router.post("/load_csv")
+async def load_csv(file: UploadFile = File(...), db: Session = Depends(get_db)) -> Dict:
+    """
+    Accept CSV with columns: timestamp (opt), sst, chl, lat, lon
+    """
+    content = await file.read()
     try:
-        occ = backend_client.fetch_occurrences(limit=limit, date_from=date_from, date_to=date_to)
+        df = pd.read_csv(io.BytesIO(content))
     except Exception as e:
-        st.warning("Could not fetch occurrences: " + str(e))
-        return pd.DataFrame()
+        raise HTTPException(status_code=400, detail=f"CSV parse error: {e}")
 
-    df = pd.DataFrame(occ)
+    inserted = 0
+    for _, r in df.iterrows():
+        try:
+            sst = float(r.get("sst") or r.get("SST"))
+            chl = float(r.get("chl") or r.get("Chl") or r.get("chlorophyll", 0.0))
+            lat = r.get("lat") or r.get("latitude") or None
+            lon = r.get("lon") or r.get("longitude") or None
+            ts = r.get("timestamp") or r.get("time") or None
+            if ts:
+                try:
+                    ts = pd.to_datetime(str(ts))
+                except Exception:
+                    ts = None
+            meas = models.Measurement(
+                sst=sst,
+                chl=chl,
+                lat=float(lat) if lat else None,
+                lon=float(lon) if lon else None,
+                timestamp=ts
+            )
+            db.add(meas)
+            inserted += 1
+        except Exception:
+            continue
+    db.commit()
+    return {"status": "ok", "inserted": inserted}
 
-    # Normalize lat/lon
-    if "decimalLatitude" in df.columns:
-        df = df.rename(columns={"decimalLatitude": "lat", "decimalLongitude": "lon"})
-    elif "latitude" in df.columns:
-        df = df.rename(columns={"latitude": "lat", "longitude": "lon"})
 
-    if "lat" in df.columns:
-        df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
-    if "lon" in df.columns:
-        df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+@router.post("/load_netcdf")
+async def load_netcdf(
+    file: UploadFile = File(...),
+    var_sst: str = "sst",
+    var_chl: Optional[str] = None,
+    db: Session = Depends(get_db)
+) -> Dict:
+    """
+    Accept a NetCDF file, extract a timeseries (mean over spatial domain) for sst and chl.
+    var_sst/var_chl: variable names in nc file.
+    """
+    content = await file.read()
+    try:
+        ds = xr.open_dataset(io.BytesIO(content))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"NetCDF open error: {e}")
 
-    return df
+    records = []
 
-# ------------------------
-# UI: Filters
-# ------------------------
-st.title("📍 Species occurrences (OBIS)")
-st.write("Data from backend or local DB.")
-
-left, right = st.columns([1.5, 1])
-with left:
-    limit = st.number_input("Max records", value=500, min_value=10, max_value=5000, step=10)
-    date_from = st.date_input("From date", value=(datetime.utcnow() - timedelta(days=365)).date())
-    date_to = st.date_input("To date", value=datetime.utcnow().date())
-    if st.button("Load occurrences"):
-        load_occurrences.clear()
-        st.experimental_rerun()
-
-with right:
-    search_name = st.text_input("Filter species (contains)", value="")
-
-# Load
-df = load_occurrences(limit=limit, date_from=str(date_from), date_to=str(date_to))
-
-if search_name and "scientificName" in df.columns:
-    df = df[df["scientificName"].str.contains(search_name, case=False, na=False)]
-
-st.markdown(f"**Records loaded:** {len(df)}")
-
-# ------------------------
-# Top species chart + CSV export
-# ------------------------
-if not df.empty and "scientificName" in df.columns:
-    top = df["scientificName"].value_counts().nlargest(12)
-    top_df = top.reset_index().rename(columns={"index":"scientificName","scientificName":"count"})
-    import plotly.express as px
-    st.subheader("Top species")
-    fig = px.bar(top_df, x="count", y="scientificName", orientation="h", height=350)
-    st.plotly_chart(fig, use_container_width=True)
-    csv = df.to_csv(index=False).encode("utf-8")
-    st.download_button("Export CSV", data=csv, file_name="occurrences_export.csv", mime="text/csv")
-
-# ------------------------
-# Map
-# ------------------------
-st.markdown("### Map")
-if not df.empty and {"lat","lon"}.issubset(df.columns):
-    map_df = df.dropna(subset=["lat","lon"])
-    if FOLIUM:
-        center = [map_df["lat"].mean(), map_df["lon"].mean()]
-        m = folium.Map(location=center, zoom_start=4, tiles="cartodbpositron")
-        HeatMap(map_df[["lat","lon"]].values.tolist(), radius=15, blur=10).add_to(m)
-        mc = MarkerCluster().add_to(m)
-        for _, r in map_df.iterrows():
-            popup = f"<b>{r.get('scientificName','-')}</b><br>{r.get('eventDate','-')}<br>{r.get('datasetID','-')}<br>ID: {r.get('occurrenceID','-')}"
-            folium.Marker(location=[r["lat"], r["lon"]], popup=popup).add_to(mc)
-        st_folium(m, width=900, height=450)
+    if "time" in ds.dims:
+        times = ds["time"].values
+        for t in times:
+            try:
+                sst_val = float(ds[var_sst].sel(time=t).mean().values)
+            except Exception:
+                sst_val = None
+            chl_val = None
+            if var_chl and var_chl in ds:
+                try:
+                    chl_val = float(ds[var_chl].sel(time=t).mean().values)
+                except Exception:
+                    chl_val = None
+            records.append({
+                "time": pd.to_datetime(str(t)).isoformat(),
+                "sst": sst_val,
+                "chl": chl_val
+            })
     else:
-        st.map(map_df.rename(columns={"lat":"latitude","lon":"longitude"}))
-else:
-    st.info("No geolocated records to show.")
+        try:
+            sst_val = float(ds[var_sst].mean().values)
+        except Exception:
+            sst_val = None
+        chl_val = None
+        if var_chl and var_chl in ds:
+            try:
+                chl_val = float(ds[var_chl].mean().values)
+            except Exception:
+                chl_val = None
+        records.append({
+            "time": datetime.utcnow().isoformat(),
+            "sst": sst_val,
+            "chl": chl_val
+        })
 
-# ------------------------
-# Table + provenance view
-# ------------------------
-st.markdown("### Records table")
-st.dataframe(df.head(100))
+    inserted = 0
+    for r in records:
+        if r["sst"] is None and r["chl"] is None:
+            continue
+        meas = models.Measurement(
+            sst=r["sst"],
+            chl=r["chl"],
+            lat=None,
+            lon=None,
+            timestamp=pd.to_datetime(r["time"])
+        )
+        db.add(meas)
+        inserted += 1
+    db.commit()
+    return {"status": "ok", "inserted": inserted, "sample": records[:3]}
+
