@@ -6,7 +6,7 @@ python-dotenv==1.0.1
 requests==2.32.3
 
 # Database
-psycopg2-binary==2.9.9
+psycopg2-binary==2.9.7
 SQLAlchemy==2.0.34
 geoalchemy2==0.15.2
 
@@ -23,12 +23,9 @@ xarray==2024.7.0
 netCDF4==1.7.1.post2
 
 # Machine learning
-
 scikit-learn==1.5.2
 opencv-python-headless==4.10.0.84
 matplotlib==3.9.2
-
-
 
 # Alerting
 twilio==9.2.4
