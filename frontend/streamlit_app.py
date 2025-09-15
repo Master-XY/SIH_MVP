@@ -19,7 +19,6 @@ import logging
 import json
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict
-from frontend import backend_client
 
 
 import streamlit as st
@@ -33,6 +32,9 @@ from folium.plugins import HeatMap ,MarkerCluster
 from typing import Optional, List
 from streamlit_folium import st_folium
 import plotly.express as px
+import sys, os
+sys.path.append(os.path.dirname(os.path.dirname(__file__)))
+from frontend import backend_client
 
 # Optional: load .env if python-dotenv installed
 try:
