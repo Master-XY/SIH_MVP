@@ -14,7 +14,9 @@ from . import models
 from .inference import save_upload, predict_otolith_stub
 from .alerts import create_advisory_pdf
 from . import alerts, models
+from . import measurements   # near other relative imports
 from .db import engine, Base
+from .db import get_db
 
 # create tables
 Base.metadata.create_all(bind=engine)
@@ -32,6 +34,8 @@ def root():
 app.include_router(alerts.router)
 
 app = FastAPI(title="SIH MVP Backend", version="0.1.0")
+
+app.include_router(measurements.router, prefix="/api/v1")
 
 app.add_middleware(
     CORSMiddleware,

@@ -3,6 +3,17 @@ from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Text , Bo
 from sqlalchemy import Table, ForeignKey
 from sqlalchemy.sql import func
 from .db import Base
+from datetime import datetime
+
+class Measurement(Base):
+    __tablename__ = "measurements"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
+    sst = Column(Float, nullable=True)       # sea surface temp
+    chl = Column(Float, nullable=True)       # chlorophyll
+    lat = Column(String, nullable=True)      # latitude (optional, string for simplicity)
+    lon = Column(String, nullable=True)      # longitude (optional)
 
 class Occurrence(Base):
     __tablename__ = "occurrences"

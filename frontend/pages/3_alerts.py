@@ -5,6 +5,7 @@ import requests
 import pandas as pd
 import streamlit as st
 from datetime import datetime, date, timedelta
+import numpy as np
 
 # try to use folium map if available for nicer markers
 try:
@@ -40,6 +41,14 @@ def fetch_alerts_from_backend():
         st.warning("Could not reach backend; showing no alerts (or fallback).")
         return []
 
+def synthetic_measurements(n_days: int = 90):
+    """Generate fake SST + Chl data for demo mode."""
+    now = datetime.utcnow()
+    dates = [now - timedelta(days=i) for i in range(n_days)]
+    dates.reverse()
+    sst = 27 + 0.5*np.sin(np.linspace(0, 4*np.pi, n_days)) + np.random.normal(0, 0.3, n_days)
+    chl = 0.3 + 0.1*np.sin(np.linspace(0, 2*np.pi, n_days)) + np.random.normal(0, 0.05, n_days)
+    return pd.DataFrame({"ts": dates, "sst": sst, "chl": chl})
 
 def run_detector(payload: dict = None):
     """Call backend anomaly check (backend should support POST /alerts/check)."""
@@ -110,7 +119,6 @@ def geodf_from_alerts(alerts):
             "notified": a.get("notified", False)
         })
     return pd.DataFrame(rows)
-
 
 # ----------------------
 # UI
@@ -265,3 +273,32 @@ else:
 
             # Small spacer
             st.markdown("---")
+
+# Demo/Live toggle (put near top)
+mode = st.radio("Mode", ["Demo (synthetic)", "Live (backend)"], horizontal=True)
+use_demo = (mode == "Demo (synthetic)")
+
+# Fetch measurements
+if use_demo:
+    # use synthetic if you prefer quick demo
+    df_meas = synthetic_measurements()  # if you already have this helper
+else:
+    try:
+        resp = requests.get(BACKEND + "/measurements/recent?limit=500", timeout=6)
+        if resp and resp.status_code == 200:
+            df_meas = pd.DataFrame(resp.json().get("measurements", []))
+        else:
+            st.warning("Could not fetch measurements; falling back to demo")
+            df_meas = synthetic_measurements()
+    except Exception:
+        st.warning("Failed to reach backend; using demo data")
+        df_meas = synthetic_measurements()
+
+# Simple plot
+if not df_meas.empty:
+    df_meas['ts'] = pd.to_datetime(df_meas.get('timestamp') )
+    df_meas = df_meas.sort_values('ts')
+    df_meas['sst_roll'] = df_meas['sst'].rolling(7, min_periods=1).mean()
+    import plotly.express as px
+    fig = px.line(df_meas, x='ts', y=['sst','sst_roll'], labels={'value':'SST (°C)','ts':'time'}, title="SST timeseries")
+    st.plotly_chart(fig, use_container_width=True)
