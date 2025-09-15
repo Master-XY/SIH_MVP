@@ -63,8 +63,6 @@ def fetch_alerts(limit=50):
                 "lon": r.lon,
                 "payload": r.payload,
                 "created_at": r.created_at.isoformat() if r.created_at else None,
-                "sst": r.sst,
-                "chl": r.chl,
                 "notified": bool(r.notified)
             })
         return {"alerts": out} if out else []
@@ -102,8 +100,6 @@ def download_alert_pdf_bytes(alert_id: int):
         alert_dict = {
             "id": a.id,
             "created_at": a.created_at.isoformat() if a.created_at else None,
-            "sst": a.sst,
-            "chl": a.chl,
             "lat": a.lat,
             "lon": a.lon,
             "type": a.type,
@@ -216,8 +212,6 @@ def get_recent_measurements(limit: int = 200):
         out = []
         for r in rows:
             out.append({
-                "sst": r.sst,
-                "chl": r.chl,
                 "timestamp": r.timestamp.isoformat() if r.timestamp else None,
                 "lat": r.lat,
                 "lon": r.lon

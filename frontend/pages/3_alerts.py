@@ -19,8 +19,10 @@ from streamlit_folium import st_folium
 def synthetic_alerts() -> List[Dict]:
     now = datetime.utcnow().isoformat()
     return [
-        {"id": 1, "type": "SST anomaly", "status": "active", "message": "SST +2.1°C above climatology", "time": now, "lat": 16.5, "lon": 72.3},
-        {"id": 2, "type": "HAB-like", "status": "resolved", "message": "Chl spike observed", "time": now, "lat": 18.7, "lon": 82.1},
+        {"id": 1, "type": "SST anomaly", "status": "active", "message": "SST +2.1°C above climatology",
+         "time": now, "lat": 16.5, "lon": 72.3, "sst": None, "chl": None},
+        {"id": 2, "type": "HAB-like", "status": "resolved", "message": "Chl spike observed",
+         "time": now, "lat": 18.7, "lon": 82.1, "sst": None, "chl": None},
     ]
 
 # ----------------------------
