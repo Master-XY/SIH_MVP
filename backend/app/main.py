@@ -13,7 +13,8 @@ from .db import SessionLocal, engine, Base
 from . import models
 from .inference import save_upload, predict_otolith_stub
 from .alerts import create_advisory_pdf
-from app import alerts
+from . import alerts, models
+from .db import engine, Base
 
 # create tables
 Base.metadata.create_all(bind=engine)

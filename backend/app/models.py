@@ -1,5 +1,5 @@
 # backend/app/models.py
-from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Text
+from sqlalchemy import Column, Integer, String, Float, DateTime, JSON, Text , Boolean
 from sqlalchemy import Table, ForeignKey
 from sqlalchemy.sql import func
 from .db import Base
@@ -42,3 +42,9 @@ class Alert(Base):
     lon = Column(Float)
     payload = Column(JSON)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # NEW FIELDS
+    sst = Column(Float, nullable=True)
+    chl = Column(Float, nullable=True)
+    notified = Column(Boolean, default=False)
+
