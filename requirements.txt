@@ -20,7 +20,7 @@ plotly==5.24.0
 pandas>=2.2.3,<2.4
 numpy>=1.26.4
 xarray==2024.7.0
-netCDF4==1.7.1.post2
+netCDF4==1.7.4   # latest precompiled wheel that supports Python 3.13 on Windows
 
 # Machine learning / imaging / plotting
 scikit-learn==1.6.0
