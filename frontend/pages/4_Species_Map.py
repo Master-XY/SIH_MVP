@@ -1,7 +1,7 @@
 # backend/app/measurements.py
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from .db import get_db
+from . import get_db
 from . import models
 import pandas as pd
 import io
