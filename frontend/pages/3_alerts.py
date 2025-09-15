@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from datetime import datetime, date, timedelta
 import numpy as np
+from frontend import backend_client
 
 # try to use folium map if available for nicer markers
 try:
@@ -23,23 +24,23 @@ BACKEND = os.environ.get("SIH_BACKEND_URL", "http://localhost:8000/api/v1").rstr
 # ----------------------
 # Helpers
 # ----------------------
+
 @st.cache_data(ttl=30)
 def fetch_alerts_from_backend():
+    # backend_client returns {"alerts": [...] } or []
     try:
-        r = requests.get(f"{BACKEND}/alerts", timeout=6)
-        r.raise_for_status()
-        payload = r.json()
-        # backend may return {"alerts": [...]} or a list
-        if isinstance(payload, dict) and "alerts" in payload:
-            alerts = payload["alerts"] or []
-        elif isinstance(payload, list):
-            alerts = payload
+        res = backend_client.fetch_alerts(limit=50)
+        # keep existing code expecting either dict or list
+        if isinstance(res, dict) and "alerts" in res:
+            return res["alerts"] or []
+        elif isinstance(res, list):
+            return res
         else:
-            alerts = payload or []
-        return alerts
+            return res or []
     except Exception as e:
-        st.warning("Could not reach backend; showing no alerts (or fallback).")
+        st.warning("Could not reach local backend: " + str(e))
         return []
+
 
 def synthetic_measurements(n_days: int = 90):
     """Generate fake SST + Chl data for demo mode."""
