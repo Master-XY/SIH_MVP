@@ -15,7 +15,7 @@ from .inference import save_upload, predict_otolith_stub
 from .alerts import create_advisory_pdf
 from . import alerts, models
 from . import measurements   # near other relative imports
-from .db import engine, Base
+from .db import SessionLocal, engine, Base
 from .db import get_db
 
 # create tables

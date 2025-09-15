@@ -27,7 +27,8 @@ import requests
 from PIL import Image, ImageDraw
 
 import folium
-from folium.plugins import MarkerCluster
+from folium.plugins import HeatMap ,MarkerCluster
+from typing import Optional, List
 from streamlit_folium import st_folium
 import plotly.express as px
 
@@ -169,28 +170,61 @@ def fetch_alerts() -> List[Dict]:
 # ----------------------------
 # Helper UI pieces
 # ----------------------------
-def create_map(df: pd.DataFrame, center=(20.0, 80.0), zoom_start: int = 5, popup_fields: Optional[List[str]] = None):
-    m = folium.Map(location=center, zoom_start=zoom_start, tiles="cartodbpositron")
+import folium
+from folium.plugins import MarkerCluster
+from typing import Optional, List
+import pandas as pd
+
+def create_map(df: pd.DataFrame, center=(20.5937, 78.9629), zoom_start: int = 5, popup_fields: Optional[List[str]] = None):
+    """
+    Create a Folium map centered on India with markers from the provided DataFrame.
+
+    Parameters:
+    - df: DataFrame containing 'decimalLatitude', 'decimalLongitude', and other fields for popup.
+    - center: Tuple (latitude, longitude) to center the map. Default is India's center.
+    - zoom_start: Initial zoom level for the map. Default is 5.
+    - popup_fields: List of fields to display in the popup. Defaults to ["scientificName", "eventDate", "datasetID", "qc_flag"].
+
+    Returns:
+    - folium.Map object centered on India with markers from the DataFrame.
+    """
+    # Create the map centered on India
+    m = folium.Map(location=center, zoom_start=zoom_start, tiles="cartodb positron")
+
+    # Add Mapbox tile layer if token is available
     token = st.session_state.get("MAPBOX_TOKEN", "")
     if token:
         folium.TileLayer(
             tiles=f"https://api.mapbox.com/styles/v1/mapbox/light-v10/tiles/{{z}}/{{x}}/{{y}}?access_token={token}",
-            attr="Mapbox", name="Mapbox", control=True, overlay=False).add_to(m)
+            attr="Mapbox", name="Mapbox", control=True, overlay=False
+        ).add_to(m)
+
+    # Initialize MarkerCluster
     cluster = MarkerCluster().add_to(m)
+
+    # Set default popup fields if none provided
     popup_fields = popup_fields or ["scientificName", "eventDate", "datasetID", "qc_flag"]
+
+    # Add markers to the map
     for _, row in df.iterrows():
         try:
             lat = float(row["decimalLatitude"])
             lon = float(row["decimalLongitude"])
         except Exception:
             continue
+
+        # Create popup HTML content
         popup_html = "<div>"
         for f in popup_fields:
             if f in row:
-                popup_html += f"<b>{f}:</b> {row.get(f,'-')}<br/>"
+                popup_html += f"<b>{f}:</b> {row.get(f, '-')}<br/>"
         popup_html += "</div>"
+
+        # Add marker to the cluster
         folium.Marker([lat, lon], popup=popup_html).add_to(cluster)
+
     return m
+
 
 def show_provenance(df: pd.DataFrame, index: int):
     if index < 0 or index >= len(df):
@@ -217,7 +251,7 @@ def show_provenance(df: pd.DataFrame, index: int):
 # ----------------------------
 # Page Implementations
 # ----------------------------
-# Replace the old `page_home()` entirely with this
+#  `page_home()` 
 def page_home():
     st.header("Home — Overview")
     
@@ -315,13 +349,21 @@ def page_home():
         df = pd.DataFrame(st.session_state.get("last_occurrences", [])) if st.session_state.get("last_occurrences") else fetch_occurrences()
         st.write(f"Showing {len(df)} records")
         
-        if not df.empty:
-            center = (df["decimalLatitude"].mean(), df["decimalLongitude"].mean())
+        # Determine center and zoom
+        if df.empty:
+            center = (0.0, 20.0)  # Africa default
+            zoom = 3
         else:
-            center = (20.0, 80.0)
-        
-        m = create_map(df, center=center, zoom_start=5)
+            center = (df["decimalLatitude"].mean(), df["decimalLongitude"].mean())
+            zoom = 5
+
+        # Create the map
+        m = create_map(df, center=center, zoom_start=zoom, india_tiles=False)
+
+        # Display in Streamlit
+        from streamlit_folium import st_folium
         st_folium(m, width=800, height=500)
+
         
         # Provenance selection
         if not df.empty:
@@ -343,6 +385,36 @@ def page_home():
                 st.download_button("Download CSV", buf.getvalue(), file_name="occurrences.csv", mime="text/csv")
             else:
                 st.info("No data to download.")
+
+def create_map(df, center=(0.0, 20.0), zoom_start=3, india_tiles=False):
+    """
+    df: pandas DataFrame with 'decimalLatitude', 'decimalLongitude', 'scientificName'
+    center: default center (lat, lon)
+    zoom_start: default zoom
+    india_tiles: use India-compliant tiles if True
+    """
+    # Create map
+    if india_tiles:
+        # Mapbox India tiles (requires free token)
+        TOKEN = "YOUR_MAPBOX_TOKEN"
+        m = folium.Map(location=center, zoom_start=zoom_start,
+                       tiles=f"https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={TOKEN}",
+                       attr='Mapbox')
+    else:
+        m = folium.Map(location=center, zoom_start=zoom_start)
+
+    # Add markers
+    if not df.empty:
+        for _, row in df.iterrows():
+            lat, lon = row["decimalLatitude"], row["decimalLongitude"]
+            name = row.get("scientificName", "")
+            folium.Marker([lat, lon], popup=name).add_to(m)
+
+        # Add heatmap
+        heat_data = df[["decimalLatitude", "decimalLongitude"]].dropna().values.tolist()
+        HeatMap(heat_data, radius=15, blur=10).add_to(m)
+
+    return m                
 
 
 def page_otoliths():

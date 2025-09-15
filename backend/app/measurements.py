@@ -7,8 +7,26 @@ import pandas as pd
 import io
 import xarray as xr
 from datetime import datetime
+from fastapi import Query
 
 router = APIRouter(tags=["measurements"], prefix="/measurements")
+
+@router.get("/recent")
+def get_recent_measurements(limit: int = Query(200), db: Session = Depends(get_db)):
+    """
+    Return latest measurements (SST, Chl) up to `limit` records
+    """
+    rows = db.query(models.Measurement).order_by(models.Measurement.id.desc()).limit(limit).all()
+    out = []
+    for r in rows:
+        out.append({
+            "sst": r.sst,
+            "chl": r.chl,
+            "timestamp": r.timestamp.isoformat() if r.timestamp else None,
+            "lat": r.lat,
+            "lon": r.lon
+        })
+    return out
 
 @router.post("/load_csv")
 async def load_csv(file: UploadFile = File(...), db: Session = Depends(get_db)):

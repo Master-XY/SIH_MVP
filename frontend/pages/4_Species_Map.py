@@ -11,7 +11,7 @@ BACKEND = os.environ.get("SIH_BACKEND_URL", "http://127.0.0.1:8000/api/v1").rstr
 # Optional nicer map if available
 try:
     import folium
-    from folium.plugins import MarkerCluster
+    from folium.plugins import MarkerCluster, HeatMap
     from streamlit_folium import st_folium
     FOLIUM = True
 except Exception:
@@ -35,10 +35,6 @@ def fetch_occurrences(limit=1000, bbox=None, date_from=None, date_to=None):
         r = requests.get(f"{BACKEND}/occurrences", params=params, timeout=10)
         r.raise_for_status()
         payload = r.json()
-        # backend might return list or dict
-        if isinstance(payload, dict) and "alerts" in payload:
-            # defensive: wrong endpoint
-            return []
         if isinstance(payload, dict) and "data" in payload:
             recs = payload["data"]
         elif isinstance(payload, list):
@@ -56,7 +52,7 @@ def normalize_df(recs):
     if not recs:
         return pd.DataFrame()
     df = pd.DataFrame(recs)
-    # harmonize common names
+    # harmonize lat/lon
     for col in ("decimalLatitude","lat","latitude"):
         if col in df.columns:
             df = df.rename(columns={col: "lat"})
@@ -65,17 +61,10 @@ def normalize_df(recs):
         if col in df.columns:
             df = df.rename(columns={col: "lon"})
             break
-    # try to parse lat/lon as floats
-    def safe_float(x):
-        try:
-            return float(x)
-        except Exception:
-            return None
-    if "lat" in df.columns:
-        df["lat"] = df["lat"].apply(safe_float)
-    if "lon" in df.columns:
-        df["lon"] = df["lon"].apply(safe_float)
-    # friendly columns
+    # parse as float safely
+    df["lat"] = df.get("lat").apply(lambda x: float(x) if x is not None else None) if "lat" in df.columns else None
+    df["lon"] = df.get("lon").apply(lambda x: float(x) if x is not None else None) if "lon" in df.columns else None
+    # harmonize species name
     if "scientificName" not in df.columns and "species" in df.columns:
         df = df.rename(columns={"species":"scientificName"})
     return df
@@ -113,11 +102,20 @@ st.markdown(f"**Records loaded:** {len(df)}")
 # ------------------------
 if not df.empty and "scientificName" in df.columns:
     top = df["scientificName"].value_counts().nlargest(12)
+    top.name = "count"
+    top_df = top.reset_index().rename(columns={"index":"scientificName"})
+    
     st.subheader("Top species")
     c1, c2 = st.columns([2,1])
     with c1:
         import plotly.express as px
-        fig = px.bar(top.reset_index().rename(columns={"index":"species","scientificName":"count"}), x="count", y="species", orientation="h", height=350)
+        fig = px.bar(
+            top_df,
+            x="count",
+            y="scientificName",
+            orientation="h",
+            height=350
+        )
         st.plotly_chart(fig, use_container_width=True)
     with c2:
         csv = df.to_csv(index=False).encode("utf-8")
@@ -127,17 +125,26 @@ if not df.empty and "scientificName" in df.columns:
 # Map
 # ------------------------
 st.markdown("### Map")
-map_df = df.dropna(subset=["lat","lon"])[["lat","lon","scientificName","eventDate","datasetID","occurrenceID"]]
+map_df = df.dropna(subset=["lat","lon"])
 if map_df.empty:
     st.info("No geolocated records to show for current filters.")
 else:
     if FOLIUM:
-        center = [map_df["lat"].mean(), map_df["lon"].mean()]
-        m = folium.Map(location=center, zoom_start=6, tiles="cartodbpositron")
+        # Default center over Africa
+        center = [9.9, 76.6]  
+        m = folium.Map(location=center, zoom_start=3, tiles="cartodbpositron")
+
+        # Heatmap
+        heat_data = map_df[["lat","lon"]].values.tolist()
+        if heat_data:
+            HeatMap(data=heat_data, radius=15, blur=10).add_to(m)
+
+        # MarkerCluster
         mc = MarkerCluster().add_to(m)
         for _, r in map_df.iterrows():
-            popup = f"<b>{r.get('scientificName','-')}</b><br/>{r.get('eventDate','-')}<br/>{r.get('datasetID','-')}<br/ID: {r.get('occurrenceID','-')}"
+            popup = f"<b>{r.get('scientificName','-')}</b><br>{r.get('eventDate','-')}<br>{r.get('datasetID','-')}<br>ID: {r.get('occurrenceID','-')}"
             folium.Marker(location=[r["lat"], r["lon"]], popup=popup).add_to(mc)
+
         st_folium(m, width=900, height=450)
     else:
         map_df2 = map_df.rename(columns={"lat":"latitude","lon":"longitude"})
