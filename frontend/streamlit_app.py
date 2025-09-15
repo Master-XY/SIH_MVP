@@ -20,19 +20,18 @@ import json
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict
 
-
 import streamlit as st
 import pandas as pd
 import numpy as np
-import requests
-from PIL import Image, ImageDraw
+from PIL import Image
 
 import folium
-from folium.plugins import HeatMap ,MarkerCluster
-from typing import Optional, List
+from folium.plugins import HeatMap, MarkerCluster
 from streamlit_folium import st_folium
 import plotly.express as px
-import sys, os
+import sys
+
+# Ensure backend_client import works
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 from frontend import backend_client
 
@@ -61,7 +60,6 @@ except Exception:
     # don't crash startup on seed errors
     pass
 
-
 # ----------------------------
 # Utility helpers
 # ----------------------------
@@ -82,29 +80,6 @@ if "MAPBOX_TOKEN" not in st.session_state:
     st.session_state["MAPBOX_TOKEN"] = DEFAULT_MAPBOX
 
 BACKEND_API = lambda: st.session_state.get("SIH_BACKEND_URL", DEFAULT_BACKEND)
-
-# Generic backend callers with error handling and logging
-def backend_get(path: str, params: dict = None, timeout: float = 8.0) -> Optional[dict]:
-    url = BACKEND_API().rstrip("/") + "/" + path.lstrip("/")
-    try:
-        r = requests.get(url, params=params or {}, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.warning(f"Backend GET failed: {url} — {e}")
-        logger.error("Backend GET failed: %s — %s", url, e)
-        return None
-
-def backend_post(path: str, files=None, data=None, json_data=None, timeout: float = 20.0) -> Optional[dict]:
-    url = BACKEND_API().rstrip("/") + "/" + path.lstrip("/")
-    try:
-        r = requests.post(url, files=files, data=data, json=json_data, timeout=timeout)
-        r.raise_for_status()
-        return r.json()
-    except Exception as e:
-        st.warning(f"Backend POST failed: {url} — {e}")
-        logger.error("Backend POST failed: %s — %s", url, e)
-        return None
 
 # ----------------------------
 # Synthetic / fallback data
@@ -143,515 +118,291 @@ def synthetic_alerts():
 # ----------------------------
 @st.cache_data(ttl=120)
 def fetch_occurrences(bbox: Optional[str] = None, date_from: Optional[str] = None, date_to: Optional[str] = None) -> pd.DataFrame:
-    """Try backend, otherwise return synthetic DataFrame."""
-    params = {}
-    if bbox:
-        params["bbox"] = bbox
-    if date_from:
-        params["date_from"] = date_from
-    if date_to:
-        params["date_to"] = date_to
-    res = backend_get("/occurrences", params=params)
-    if res is None:
+    """Try backend_client, otherwise return synthetic DataFrame."""
+    try:
+        res = backend_client.fetch_occurrences(limit=1000, date_from=date_from, date_to=date_to)
+    except Exception as e:
+        logger.error(f"fetch_occurrences failed: {e}")
+        res = None
+
+    if not res:
         return synthetic_occurrences()
-    # backend may return list or dict
+
     if isinstance(res, list):
         df = pd.DataFrame(res)
     elif isinstance(res, dict) and "data" in res:
         df = pd.DataFrame(res["data"])
     else:
         df = pd.DataFrame([res])
-    # Normalize column names
-    # expected: decimalLatitude, decimalLongitude
+
     if "decimalLatitude" not in df.columns and "lat" in df.columns:
         df = df.rename(columns={"lat": "decimalLatitude", "lon": "decimalLongitude"})
     return df
 
 @st.cache_data(ttl=120)
 def fetch_alerts() -> List[Dict]:
-    res = backend_get("/alerts")
-    if res is None:
+    try:
+        res = backend_client.fetch_alerts(limit=50)
+    except Exception as e:
+        logger.error(f"fetch_alerts failed: {e}")
+        res = None
+
+    if not res:
         return synthetic_alerts()
     if isinstance(res, dict) and "alerts" in res:
         return res["alerts"]
     if isinstance(res, list):
         return res
     return []
+# ----------------------------
+# Measurements & Ocean Data
+# ----------------------------
+@st.cache_data(ttl=120)
+def fetch_recent_measurements(limit: int = 200) -> pd.DataFrame:
+    """Try backend_client, otherwise return synthetic DataFrame."""
+    try:
+        res = backend_client.get_recent_measurements(limit=limit)
+    except Exception as e:
+        logger.error(f"fetch_recent_measurements failed: {e}")
+        res = None
+
+    if not res:
+        # synthetic fallback
+        now = datetime.utcnow()
+        df = pd.DataFrame([{
+            "sst": 27 + np.random.rand(),
+            "chl": 0.3 + np.random.rand() * 0.1,
+            "timestamp": (now - timedelta(hours=i)).isoformat(),
+            "lat": 16 + np.random.rand(),
+            "lon": 72 + np.random.rand()
+        } for i in range(limit)])
+    else:
+        df = pd.DataFrame(res)
+    return df
 
 # ----------------------------
-# Helper UI pieces
+# Otoliths upload & inference
 # ----------------------------
-import folium
-from folium.plugins import MarkerCluster
-from typing import Optional, List
-import pandas as pd
+def handle_otolith_upload(uploaded_file):
+    if uploaded_file is None:
+        return None
 
-def create_map(df: pd.DataFrame, center=(20.5937, 78.9629), zoom_start: int = 5, popup_fields: Optional[List[str]] = None):
-    """
-    Create a Folium map centered on India with markers from the provided DataFrame.
+    bytes_data = uploaded_file.read()
+    filename = uploaded_file.name
+    try:
+        result = backend_client.predict_otolith(bytes_data, filename)
+    except Exception as e:
+        logger.error(f"Otolith prediction failed: {e}")
+        return {"error": str(e)}
 
-    Parameters:
-    - df: DataFrame containing 'decimalLatitude', 'decimalLongitude', and other fields for popup.
-    - center: Tuple (latitude, longitude) to center the map. Default is India's center.
-    - zoom_start: Initial zoom level for the map. Default is 5.
-    - popup_fields: List of fields to display in the popup. Defaults to ["scientificName", "eventDate", "datasetID", "qc_flag"].
+    return result
 
-    Returns:
-    - folium.Map object centered on India with markers from the DataFrame.
-    """
-    # Create the map centered on India
-    m = folium.Map(location=center, zoom_start=zoom_start, tiles="cartodb positron")
+# ----------------------------
+# PDF advisory download
+# ----------------------------
+def download_alert_pdf(alert_id: int):
+    try:
+        pdf_bytes = backend_client.download_alert_pdf_bytes(alert_id)
+    except Exception as e:
+        logger.error(f"download_alert_pdf failed: {e}")
+        pdf_bytes = None
+    return pdf_bytes
 
-    # Add Mapbox tile layer if token is available
-    token = st.session_state.get("MAPBOX_TOKEN", "")
-    if token:
-        folium.TileLayer(
-            tiles=f"https://api.mapbox.com/styles/v1/mapbox/light-v10/tiles/{{z}}/{{x}}/{{y}}?access_token={token}",
-            attr="Mapbox", name="Mapbox", control=True, overlay=False
-        ).add_to(m)
+# ----------------------------
+# Notification sending
+# ----------------------------
+def send_alert_notification(alert_id: int, channels: List[str], targets: Dict):
+    try:
+        res = backend_client.send_notify(alert_id, channels, targets)
+    except Exception as e:
+        logger.error(f"send_alert_notification failed: {e}")
+        res = {"error": str(e)}
+    return res
 
-    # Initialize MarkerCluster
-    cluster = MarkerCluster().add_to(m)
+# ----------------------------
+# Map helpers
+# ----------------------------
+def create_map(df: pd.DataFrame,
+               center=(9.9, 76.6),
+               zoom_start: int = 5,
+               popup_fields: Optional[List[str]] = None):
+    """Generate folium map centered on India."""
+    m = folium.Map(location=center, zoom_start=zoom_start, tiles="cartodbpositron")
+    marker_cluster = MarkerCluster().add_to(m)
 
-    # Set default popup fields if none provided
-    popup_fields = popup_fields or ["scientificName", "eventDate", "datasetID", "qc_flag"]
+    if popup_fields is None:
+        popup_fields = ["scientificName", "eventDate", "datasetID"]
 
-    # Add markers to the map
-    for _, row in df.iterrows():
-        try:
-            lat = float(row["decimalLatitude"])
-            lon = float(row["decimalLongitude"])
-        except Exception:
+    for idx, row in df.iterrows():
+        lat, lon = row.get("decimalLatitude"), row.get("decimalLongitude")
+        if lat is None or lon is None:
             continue
-
-        # Create popup HTML content
-        popup_html = "<div>"
-        for f in popup_fields:
-            if f in row:
-                popup_html += f"<b>{f}:</b> {row.get(f, '-')}<br/>"
-        popup_html += "</div>"
-
-        # Add marker to the cluster
-        folium.Marker([lat, lon], popup=popup_html).add_to(cluster)
+        popup_html = "<br>".join(f"<b>{f}:</b> {row.get(f,'')}" for f in popup_fields)
+        folium.Marker([lat, lon], popup=popup_html).add_to(marker_cluster)
 
     return m
 
-
-def show_provenance(df: pd.DataFrame, index: int):
-    if index < 0 or index >= len(df):
-        st.write("No record selected")
-        return
-    rec = df.iloc[index]
-    st.subheader("Provenance & QC")
-    prov = rec.get("provenance", None)
-    if pd.isna(prov) or not prov:
-        st.write("No provenance metadata available.")
-    else:
-        if isinstance(prov, str):
-            try:
-                prov_obj = json.loads(prov)
-            except Exception:
-                prov_obj = {"info": prov}
-        else:
-            prov_obj = prov
-        st.json(prov_obj)
-    st.write("QC flag:", rec.get("qc_flag", "unset"))
-    st.write("Full record:")
-    st.json(rec.to_dict())
-
 # ----------------------------
-# Page Implementations
+# Pages: Home / Otoliths / eDNA / Ocean Data / Alerts
 # ----------------------------
-#  `page_home()` 
 def page_home():
-    st.header("Home — Overview")
-    
-    # --------------------------
-    # Backend settings expander
-    # --------------------------
-    with st.expander("Backend settings (quick)"):
-        st.text_input(
-            "Backend base (SIH_BACKEND_URL)",
-            value=st.session_state.get("SIH_BACKEND_URL", DEFAULT_BACKEND),
-            key="SIH_BACKEND_URL_input"
-        )
-        if st.button("Save Backend URL"):
-            set_setting("SIH_BACKEND_URL", st.session_state["SIH_BACKEND_URL_input"])
-            st.success("Backend URL updated for this session.")
+    st.title("SIH MVP Dashboard")
+    st.markdown("Welcome to the SIH MVP. Use the sidebar to navigate between pages.")
 
-    # --------------------------
-    # Top metrics
-    # --------------------------
-    col1, col2, col3 = st.columns(3)
-    
-    try:
-        occ_all = backend_get("/occurrences?limit=1000") or []
-        total_occ = len(occ_all) if isinstance(occ_all, list) else (len(occ_all.get("results", [])) if isinstance(occ_all, dict) else 0)
-    except Exception:
-        total_occ = 0
-    col1.metric("Occurrences (sample)", total_occ)
-    
-    try:
-        meas = backend_get("/measurements/recent?limit=200")
-        if meas and isinstance(meas, dict):
-            meas_list = meas.get("measurements", [])
-        elif isinstance(meas, list):
-            meas_list = meas
-        else:
-            meas_list = []
-        sst_latest = meas_list[0]["sst"] if meas_list else None
-    except Exception:
-        meas_list = []
-        sst_latest = None
-    col2.metric("Latest SST (°C)", sst_latest or "-")
-    
-    try:
-        alerts_resp = backend_get("/alerts")
-        alerts_list = alerts_resp.get("alerts") if isinstance(alerts_resp, dict) else (alerts_resp or [])
-        active = sum(1 for a in (alerts_list if isinstance(alerts_list, list) else []) if str(a.get("status","")).lower()=="active")
-    except Exception:
-        active = 0
-    col3.metric("Active alerts", active)
-    
-    st.markdown("---")
-    
-    # --------------------------
-    # SST timeseries
-    # --------------------------
-    st.subheader("SST timeseries (recent)")
-    import plotly.express as px
-    if meas_list:
-        dfm = pd.DataFrame(meas_list)
-        if "timestamp" in dfm.columns:
-            dfm["ts"] = pd.to_datetime(dfm["timestamp"])
-        elif "created_at" in dfm.columns:
-            dfm["ts"] = pd.to_datetime(dfm["created_at"])
-        else:
-            dfm["ts"] = pd.date_range(end=pd.Timestamp.now(), periods=len(dfm))
-        dfm = dfm.sort_values("ts")
-        dfm["sst_roll"] = dfm["sst"].astype(float).rolling(7, min_periods=1).mean()
-        fig = px.line(dfm, x="ts", y=["sst","sst_roll"], labels={"value":"SST (°C)","ts":"time"}, title="Recent SST (from backend)")
-        st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No measurement timeseries available. Use 'Live' mode on Alerts page or run the seed / ingestion scripts.")
-    
-    st.markdown("---")
-    
-    # --------------------------
-    # Occurrences map + summary + CSV
-    # --------------------------
-    st.subheader("Occurrences map & summary")
-    left, right = st.columns((2,1))
-    
-    with left:
-        bbox = st.text_input("BBox (minLon,minLat,maxLon,maxLat) — optional", "")
-        date_from = st.date_input("From date", value=date.today() - timedelta(days=365))
-        date_to = st.date_input("To date", value=date.today())
-        load_btn = st.button("Load occurrences")
-        
-        if load_btn:
-            df = fetch_occurrences(
-                bbox=bbox if bbox.strip() else None, 
-                date_from=str(date_from), 
-                date_to=str(date_to)
-            )
-            st.session_state["last_occurrences"] = df.to_dict(orient="records")
-        
-        df = pd.DataFrame(st.session_state.get("last_occurrences", [])) if st.session_state.get("last_occurrences") else fetch_occurrences()
-        st.write(f"Showing {len(df)} records")
-        
-        # Determine center and zoom
-        if df.empty:
-            center = (0.0, 20.0)  # Africa default
-            zoom = 3
-        else:
-            center = (df["decimalLatitude"].mean(), df["decimalLongitude"].mean())
-            zoom = 5
-
-        # Create the map
-        m = create_map(df, center=center, zoom_start=zoom, india_tiles=False)
-
-        # Display in Streamlit
-        from streamlit_folium import st_folium
-        st_folium(m, width=800, height=500)
-
-        
-        # Provenance selection
-        if not df.empty:
-            idx = st.number_input("Select record index to view provenance", min_value=0, max_value=len(df)-1, value=0)
-            show_provenance(df, int(idx))
-    
-    with right:
-        st.subheader("Top species")
-        if not df.empty and "scientificName" in df.columns:
-            top = df["scientificName"].value_counts().nlargest(5)
-            for s, cnt in top.items():
-                st.write(f"- {s}: {cnt}")
-        
-        st.subheader("Quick actions")
-        if st.button("Download occurrences CSV"):
-            if not df.empty:
-                buf = io.StringIO()
-                df.to_csv(buf, index=False)
-                st.download_button("Download CSV", buf.getvalue(), file_name="occurrences.csv", mime="text/csv")
-            else:
-                st.info("No data to download.")
-
-def create_map(df, center=(0.0, 20.0), zoom_start=3, india_tiles=False):
-    """
-    df: pandas DataFrame with 'decimalLatitude', 'decimalLongitude', 'scientificName'
-    center: default center (lat, lon)
-    zoom_start: default zoom
-    india_tiles: use India-compliant tiles if True
-    """
-    # Create map
-    if india_tiles:
-        # Mapbox India tiles (requires free token)
-        TOKEN = "YOUR_MAPBOX_TOKEN"
-        m = folium.Map(location=center, zoom_start=zoom_start,
-                       tiles=f"https://api.mapbox.com/styles/v1/mapbox/streets-v11/tiles/{{z}}/{{x}}/{{y}}?access_token={TOKEN}",
-                       attr='Mapbox')
-    else:
-        m = folium.Map(location=center, zoom_start=zoom_start)
-
-    # Add markers
-    if not df.empty:
-        for _, row in df.iterrows():
-            lat, lon = row["decimalLatitude"], row["decimalLongitude"]
-            name = row.get("scientificName", "")
-            folium.Marker([lat, lon], popup=name).add_to(m)
-
-        # Add heatmap
-        heat_data = df[["decimalLatitude", "decimalLongitude"]].dropna().values.tolist()
-        HeatMap(heat_data, radius=15, blur=10).add_to(m)
-
-    return m                
-
+    st.subheader("Recent Occurrences Map")
+    df_occ = fetch_occurrences()
+    map_obj = create_map(df_occ)
+    st_folium(map_obj, width=800, height=500)
 
 def page_otoliths():
-    st.header("Otolith / Species Classifier")
-    st.write("Upload otolith images to get model predictions (demo).")
-
-    upload_col, info_col = st.columns((1, 2))
-    uploaded = upload_col.file_uploader("Upload otolith image (jpg/png)", type=["jpg", "jpeg", "png"])
-
-    if uploaded:
-        try:
-            image = Image.open(uploaded).convert("RGB")
-        except Exception as e:
-            st.error(f"Cannot open image: {e}")
-            return
-
-        info_col.image(image, caption="Uploaded image", use_column_width=True)
-
-        if upload_col.button("Predict"):
-            bytes_data = uploaded.getvalue()
-            filename = uploaded.name or "upload.jpg"
-
-            with st.spinner("Running prediction..."):
-                try:
-                    resp = backend_client.predict_otolith(bytes_data, filename)
-                except Exception as e:
-                    st.error(f"Prediction failed: {e}")
-                    resp = None
-
-            if resp:
-                species = resp.get("predicted_species") or resp.get("species") or resp.get("scientificName", "unknown")
-                confidence = resp.get("confidence") or resp.get("confidence_pct") or resp.get("score")
-
-                st.success(f"Predicted: **{species}**")
-                if confidence is not None:
-                    st.write(f"Confidence: **{confidence}**")
-
-                explain = resp.get("explainability") or resp.get("explainability_refs")
-                if explain:
-                    st.write("Explainability provided by backend:")
-                    st.write(explain)
-                else:
-                    st.info("No explainability returned. Showing placeholder Grad-CAM.")
-                    overlay = Image.new("RGBA", image.size, (255, 0, 0, 40))
-                    gradcam = Image.alpha_composite(image.convert("RGBA"), overlay)
-                    st.image(gradcam, caption="Grad-CAM placeholder", use_column_width=True)
-            else:
-                st.info("Backend not reachable — running local demo prediction.")
-                species = np.random.choice([
-                    "Sardinella longiceps",
-                    "Thunnus albacares",
-                    "Rastrelliger kanagurta"
-                ])
-                conf = round(float(np.random.uniform(0.65, 0.96)), 2)
-                st.success(f"Predicted (demo): **{species}**")
-                st.write(f"Confidence: **{conf}**")
-
-                overlay = Image.new("RGBA", image.size, (255, 0, 0, 40))
-                gradcam = Image.alpha_composite(image.convert("RGBA"), overlay)
-                st.image(gradcam, caption="Grad-CAM placeholder", use_column_width=True)
-
-        # Correction / feedback form (human-in-loop)
-        st.subheader("Is the prediction wrong? Provide correction")
-        with st.form("otolith_feedback"):
-            corrected = st.text_input("Correct species name (leave blank if ok)")
-            notes = st.text_area("Notes (e.g. why incorrect, quality issues)")
-            submitted = st.form_submit_button("Send feedback")
-            if submitted:
-                payload = {"corrected_species": corrected, "notes": notes}
-                # try to POST to backend feedback endpoint (optional)
-                resp = backend_post("/otoliths/feedback", json_data=payload)
-                if resp:
-                    st.success("Feedback saved to backend.")
-                else:
-                    # store in local session for demo
-                    lst = st.session_state.get("otolith_feedback_local", [])
-                    lst.append({"time": datetime.utcnow().isoformat(), **payload})
-                    st.session_state["otolith_feedback_local"] = lst
-                    st.info("Feedback stored locally for demo.")
+    st.title("Otolith Classification")
+    uploaded_file = st.file_uploader("Upload an otolith image", type=["jpg", "jpeg", "png"])
+    if uploaded_file:
+        with st.spinner("Predicting..."):
+            result = handle_otolith_upload(uploaded_file)
+        st.json(result)
 
 def page_edna():
-    st.header("eDNA — ASV / OTU table upload")
-    st.write("Upload a CSV with columns like sampleID, taxon, count. Also accepts MIxS metadata with sample info.")
-    uploaded = st.file_uploader("Upload ASV/OTU CSV", type=["csv"])
-    if uploaded:
-        try:
-            df = pd.read_csv(uploaded)
-            st.subheader("Preview")
-            st.dataframe(df.head(50))
-            if {"taxon", "count"}.issubset(set(df.columns)):
-                summary = df.groupby("taxon")["count"].sum().reset_index().sort_values("count", ascending=False)
-                st.subheader("Top taxa (by reads)")
-                st.dataframe(summary.head(20))
-            # Show sample locations if columns present
-            if {"latitude", "longitude"}.issubset(set(df.columns)):
-                coords = df.rename(columns={"latitude": "decimalLatitude", "longitude": "decimalLongitude"})
-                m = create_map(coords, center=(coords["decimalLatitude"].mean(), coords["decimalLongitude"].mean()))
-                st_folium(m, width=800, height=400)
-        except Exception as e:
-            st.error(f"Failed to read CSV: {e}")
-    else:
-        st.info("No file uploaded. You can create a simple CSV with 'taxon,count' columns for testing.")
+    st.title("eDNA CSV Upload")
+    uploaded_file = st.file_uploader("Upload eDNA CSV", type=["csv"])
+    if uploaded_file:
+        bytes_data = uploaded_file.read()
+        res = backend_client.load_occurrences_csv(bytes_data, uploaded_file.name)
+        st.write(res)
+        df_occ = fetch_occurrences()
+        st.dataframe(df_occ.head())
 
 def page_ocean_data():
-    st.header("Ocean Data — Timeseries & NetCDF (placeholder)")
-    st.write("This page will visualise SST/chlorophyll. For now, we show demo timeseries and a hint for local NetCDF loading.")
-    days = pd.date_range(end=date.today(), periods=30)
-    sst = 27.5 + np.sin(np.linspace(0, 6, len(days))) * 0.6 + np.random.normal(0, 0.15, len(days))
-    chl = 0.4 + np.cos(np.linspace(0, 4, len(days))) * 0.08 + np.random.normal(0, 0.02, len(days))
-    df = pd.DataFrame({"date": days, "SST": sst, "Chlorophyll": chl})
-    fig = px.line(df, x="date", y=["SST", "Chlorophyll"], title="Demo ocean timeseries")
-    st.plotly_chart(fig, use_container_width=True)
-
-    st.subheader("Load local NetCDF (example stub)")
-    nc_file = st.file_uploader("Upload NetCDF (.nc) for demo plotting (optional)", type=["nc"])
-    if nc_file:
-        st.info("NetCDF uploaded — parsing is not implemented in this demo stub. Will parse variables and plot timeseries in future.")
+    st.title("Ocean Measurements")
+    df_meas = fetch_recent_measurements(limit=200)
+    st.dataframe(df_meas.head())
+    if not df_meas.empty:
+        fig = px.scatter_mapbox(df_meas, lat="lat", lon="lon", color="sst", size="chl",
+                                hover_data=["timestamp"],
+                                mapbox_style="carto-positron", zoom=4, center={"lat": 10, "lon": 75})
+        st.plotly_chart(fig, use_container_width=True)
 
 def page_alerts():
-    st.header("Alerts & Advisory Panel")
+    st.title("Alerts")
     alerts = fetch_alerts()
-    st.write(f"{len(alerts)} alerts (real or synthetic).")
-    cols = st.columns(2)
-    with cols[0]:
-        for a in alerts:
-            with st.expander(f"Alert #{a.get('id')} — {a.get('type')} ({a.get('status')})"):
-                st.write("Message:", a.get("message", "-"))
-                st.write("Time:", a.get("time", "-"))
-                st.write("Location:", f"{a.get('lat','-')}, {a.get('lon','-')}")
-                st.json(a)
-                if st.button(f"Export advisory PDF (alert {a.get('id')})"):
-                    st.info("PDF advisory generation implemented on backend in future. For now, demo only.")
-    with cols[1]:
-        st.subheader("Alerts map")
-        df_alerts = pd.DataFrame(alerts)
-        if not df_alerts.empty and {"lat", "lon"}.issubset(df_alerts.columns):
-            m = folium.Map(location=(df_alerts["lat"].mean(), df_alerts["lon"].mean()), zoom_start=5)
-            for _, r in df_alerts.iterrows():
-                color = "red" if r.get("status") == "active" else "orange"
-                folium.CircleMarker(location=[r["lat"], r["lon"]], radius=8, color=color, fill=True, fillOpacity=0.7, popup=r.get("message","")).add_to(m)
-            st_folium(m, width=600, height=400)
-        else:
-            st.write("No geolocated alerts to show.")
-
-    st.subheader("Subscribe for alerts")
-    with st.form("subscribe_form"):
-        phone = st.text_input("Phone (E.164 format, e.g. +91XXXXXXXXXX)")
-        email = st.text_input("Email (optional)")
-        sub = st.form_submit_button("Subscribe")
-        if sub:
-            payload = {"phone": phone, "email": email}
-            resp = backend_post("/subscribe", json_data=payload)
-            if resp:
-                st.success("Subscribed (backend saved).")
-            else:
-                # local demo store
-                subs = st.session_state.get("local_subscribers", [])
-                subs.append(payload)
-                st.session_state["local_subscribers"] = subs
-                st.info("Subscription saved locally for demo.")
-
-def page_api_test():
-    st.header("API Test & Tools")
-    base = BACKEND_API().rstrip("/api/v1")
-    st.write("Backend base:", base)
-    if st.button("Check backend /health"):
-        res = backend_get("/health")
-        st.write(res)
-    if st.button("List occurrences (raw)"):
-        res = backend_get("/occurrences")
-        st.write(res or "No response")
-    if st.button("Open OpenAPI docs"):
-        st.write(f"Open your browser: {base}/docs")
-
+    for a in alerts:
+        st.markdown(f"**{a.get('type')}** ({a.get('status')}) - {a.get('message')}")
+        pdf_bytes = download_alert_pdf(a["id"])
+        if pdf_bytes:
+            st.download_button(f"Download PDF for alert {a['id']}", pdf_bytes, file_name=f"alert_{a['id']}.pdf")
+        if st.button(f"Send notification for alert {a['id']}"):
+            res = send_alert_notification(a["id"], channels=["email"], targets={"admin": "admin@example.com"})
+            st.write(res)
+# ----------------------------
+# Settings & About Pages
+# ----------------------------
 def page_settings():
-    st.header("Settings")
-    st.text_input("Backend API (full path including /api/v1)", key="SIH_BACKEND_URL_input", value=st.session_state.get("SIH_BACKEND_URL", DEFAULT_BACKEND))
-    st.text_input("Mapbox token (optional)", key="MAPBOX_TOKEN_input", value=st.session_state.get("MAPBOX_TOKEN", DEFAULT_MAPBOX))
-    if st.button("Save settings (session)"):
-        set_setting("SIH_BACKEND_URL", st.session_state["SIH_BACKEND_URL_input"])
-        set_setting("MAPBOX_TOKEN", st.session_state["MAPBOX_TOKEN_input"])
-        st.success("Settings saved for current session. To persist across restarts, add to .env or export env vars.")
-    st.markdown("**Note:** This saves settings in session only. For persistent config, add `SIH_BACKEND_URL` and `MAPBOX_TOKEN` to a `.env` file or export them in your environment.")
+    st.title("Settings")
+
+    backend_url = st.text_input("Backend URL", value=st.session_state.get("SIH_BACKEND_URL"))
+    mapbox_token = st.text_input("Mapbox Token", value=st.session_state.get("MAPBOX_TOKEN"))
+
+    if st.button("Save Settings"):
+        set_setting("SIH_BACKEND_URL", backend_url)
+        set_setting("MAPBOX_TOKEN", mapbox_token)
+        st.success("Settings updated! Please refresh pages to apply.")
 
 def page_about():
-    st.header("About SIH MVP")
+    st.title("About SIH MVP Dashboard")
     st.markdown("""
-    **SIH MVP frontend** — demo dashboard for Smart India Hackathon prototype.
-    - Built with Streamlit, Folium, Plotly.
-    - Backend: FastAPI (separate service).
-    - Data standards: Darwin Core (occurrences), MIxS (eDNA), NetCDF/CF (gridded).
+    **Smart India Hackathon MVP Dashboard**  
+    - Frontend: Streamlit  
+    - Backend: FastAPI / SQLAlchemy  
+    - Features: Otolith classification, eDNA occurrence tracking, ocean measurements, anomaly alerts  
+    - Author: Team SIH  
+    - Version: 1.0  
     """)
-    st.markdown("Developer tips: keep backend running and update `Settings` to point to your API during testing.")
 
 # ----------------------------
-# Router
+# Sidebar Navigation
 # ----------------------------
-def main():
-    st.sidebar.title("SIH MVP")
-    page = st.sidebar.radio("Navigate", ["Home", "Otoliths", "eDNA", "Ocean Data", "Alerts", "API Test", "Settings", "About"])
-    # show quick backend status
-    col1, col2 = st.sidebar.columns([3, 1])
-    with col1:
-        st.sidebar.write("Backend:")
-        if backend_get("/health") is not None:
-            st.sidebar.success("Connected")
-        else:
-            st.sidebar.error("No connection (using demo data)")
+PAGES = {
+    "Home": page_home,
+    "Otoliths": page_otoliths,
+    "eDNA": page_edna,
+    "Ocean Data": page_ocean_data,
+    "Alerts": page_alerts,
+    "Settings": page_settings,
+    "About": page_about,
+}
 
-    if page == "Home":
-        page_home()
-    elif page == "Otoliths":
-        page_otoliths()
-    elif page == "eDNA":
-        page_edna()
-    elif page == "Ocean Data":
-        page_ocean_data()
-    elif page == "Alerts":
-        page_alerts()
-    elif page == "API Test":
-        page_api_test()
-    elif page == "Settings":
-        page_settings()
-    elif page == "About":
-        page_about()
+st.sidebar.title("Navigation")
+selected_page = st.sidebar.radio("Go to", list(PAGES.keys()))
+page_func = PAGES[selected_page]
 
-if __name__ == "__main__":
-    main()
+# Health check badge
+try:
+    health_status = backend_client.health()
+    status_color = "green" if health_status.get("status") == "ok" else "red"
+except Exception:
+    status_color = "red"
+st.sidebar.markdown(f"**Backend Health:** <span style='color:{status_color}'>●</span>", unsafe_allow_html=True)
 
+# Optional: force refresh button for caching
+if st.sidebar.button("Refresh Data"):
+    for key in st.session_state.keys():
+        if key.startswith("cache_"):
+            del st.session_state[key]
+    st.experimental_rerun()
+
+# ----------------------------
+# Run selected page
+# ----------------------------
+page_func()
+# ----------------------------
+# Additional helpers / utilities
+# ----------------------------
+def clear_session_cache():
+    """Clear all cached Streamlit data and rerun."""
+    st.session_state.clear()
+    st.experimental_rerun()
+
+def display_dataframe(df: pd.DataFrame, max_rows: int = 20):
+    """Safe display of a dataframe with optional truncation."""
+    if df.empty:
+        st.write("No data available.")
+        return
+    st.dataframe(df.head(max_rows))
+
+# ----------------------------
+# Error handling wrappers
+# ----------------------------
+def safe_call(fn, *args, **kwargs):
+    """Call a function and log exceptions; returns None on failure."""
+    try:
+        return fn(*args, **kwargs)
+    except Exception as e:
+        logger.error(f"safe_call error: {e}")
+        st.error(f"An error occurred: {e}")
+        return None
+
+# ----------------------------
+# Streamlit caching / refresh management
+# ----------------------------
+# Use @st.cache_data for expensive backend calls (already applied above)
+# Provide "Refresh Data" button in sidebar (already in part 3)
+# Optionally, can add per-page refresh buttons if needed
+# Example usage:
+# if st.button("Refresh Occurrences"):
+#     fetch_occurrences.clear()
+#     st.experimental_rerun()
+
+# ----------------------------
+# Initialization
+# ----------------------------
+# Ensure session state defaults
+for key, default_val in [("SIH_BACKEND_URL", DEFAULT_BACKEND), ("MAPBOX_TOKEN", DEFAULT_MAPBOX)]:
+    if key not in st.session_state:
+        st.session_state[key] = default_val
+
+# Ensure backend seeded (demo)
+safe_call(backend_client.ensure_seeded)
+
+# ----------------------------
+# End of streamlit_app.py
+# ----------------------------
