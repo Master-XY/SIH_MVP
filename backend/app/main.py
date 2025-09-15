@@ -156,16 +156,6 @@ def subscribe(phone: str = None, email: str = None, db: Session = Depends(get_db
     db.commit()
     return {"status": "ok"}
 
-# Open a netCDF file using the h5netcdf engine
-ds = xr.open_dataset("file.nc", engine="h5netcdf")
-
-# Do your processing with `ds`...
-print(ds)
-print(ds.variables)
-
-# Optionally save back to a new file
-ds.to_netcdf("output.nc", engine="h5netcdf")
-
 
 # Download CSV of occurrences
 @app.get("/api/v1/download/occurrences")
