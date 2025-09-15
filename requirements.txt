@@ -16,18 +16,18 @@ folium==0.17.0
 streamlit-folium==0.21.1
 plotly==5.24.0
 
-# Data handling (allow pandas a compatible range)
+# Data handling
 pandas>=2.2.3,<2.4
-numpy==1.26.4
+numpy>=1.26.4
 xarray==2024.7.0
 netCDF4==1.7.1.post2
 
 # Machine learning / imaging / plotting
-scikit-learn==1.5.2
+scikit-learn==1.6.0
 opencv-python-headless==4.10.0.84
 matplotlib==3.9.2
 
-# Missing libraries used in code (make sure these are available)
+# Additional libraries
 reportlab
 Pillow
 beautifulsoup4
