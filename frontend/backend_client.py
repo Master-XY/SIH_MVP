@@ -240,11 +240,25 @@ def predict_otolith(file_bytes: bytes, filename: str):
     tmp_path = save_upload(io.BytesIO(file_bytes), filename)  # save_upload expects a file-like; see backend.app.inference.save_upload
     return predict_otolith_stub(tmp_path)
 
+# ---------- Demo seeding ----------
 def ensure_seeded():
-    # lightweight: if no measurements exist, seed a few
+    """Seed the DB with sample measurements if empty (for demo on Streamlit Cloud)."""
     with db_session() as db:
         cnt = db.query(models.Measurement).count()
         if cnt == 0:
-            # simple seed
-            from backend.scripts.seed_measurements import seed
-            seed(120)  # uses the script's function to write to DB
+            try:
+                from backend.scripts.seed_measurements import seed
+                seed(120)  # seed with 120 fake records
+            except Exception:
+                # fallback: insert some manual fake data
+                from datetime import datetime, timedelta
+                import random
+                for i in range(60):
+                    t = datetime.utcnow() - timedelta(hours=i)
+                    sst = 27 + (random.random() - 0.5)
+                    chl = 0.3 + random.random() * 0.1
+                    m = models.Measurement(sst=round(sst, 2), chl=round(chl, 3), timestamp=t)
+                    db.add(m)
+                db.commit()
+
+

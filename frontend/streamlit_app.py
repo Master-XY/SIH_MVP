@@ -19,6 +19,8 @@ import logging
 import json
 from datetime import datetime, date, timedelta
 from typing import Optional, List, Dict
+from frontend import backend_client
+
 
 import streamlit as st
 import pandas as pd
@@ -50,6 +52,13 @@ DEFAULT_MAPBOX = os.getenv("MAPBOX_TOKEN", "")
 
 # Streamlit page config
 st.set_page_config(page_title="SIH MVP Dashboard", layout="wide", initial_sidebar_state="expanded")
+
+try:
+    backend_client.ensure_seeded()
+except Exception:
+    # don't crash startup on seed errors
+    pass
+
 
 # ----------------------------
 # Utility helpers
@@ -420,44 +429,58 @@ def create_map(df, center=(0.0, 20.0), zoom_start=3, india_tiles=False):
 def page_otoliths():
     st.header("Otolith / Species Classifier")
     st.write("Upload otolith images to get model predictions (demo).")
+
     upload_col, info_col = st.columns((1, 2))
     uploaded = upload_col.file_uploader("Upload otolith image (jpg/png)", type=["jpg", "jpeg", "png"])
+
     if uploaded:
         try:
             image = Image.open(uploaded).convert("RGB")
         except Exception as e:
             st.error(f"Cannot open image: {e}")
             return
+
         info_col.image(image, caption="Uploaded image", use_column_width=True)
 
-        if upload_col.button("Predict (backend)"):
-            # prepare multipart upload
-            files = {"file": (uploaded.name, uploaded, "image/jpeg")}
-            resp = backend_post("/otoliths/predict", files=files)
+        if upload_col.button("Predict"):
+            bytes_data = uploaded.getvalue()
+            filename = uploaded.name or "upload.jpg"
+
+            with st.spinner("Running prediction..."):
+                try:
+                    resp = backend_client.predict_otolith(bytes_data, filename)
+                except Exception as e:
+                    st.error(f"Prediction failed: {e}")
+                    resp = None
+
             if resp:
                 species = resp.get("predicted_species") or resp.get("species") or resp.get("scientificName", "unknown")
                 confidence = resp.get("confidence") or resp.get("confidence_pct") or resp.get("score")
+
                 st.success(f"Predicted: **{species}**")
                 if confidence is not None:
                     st.write(f"Confidence: **{confidence}**")
-                # explainability
-                explain = resp.get("explainability", None) or resp.get("explainability_refs", None)
+
+                explain = resp.get("explainability") or resp.get("explainability_refs")
                 if explain:
                     st.write("Explainability provided by backend:")
                     st.write(explain)
                 else:
                     st.info("No explainability returned. Showing placeholder Grad-CAM.")
-                    # create translucent overlay placeholder
                     overlay = Image.new("RGBA", image.size, (255, 0, 0, 40))
                     gradcam = Image.alpha_composite(image.convert("RGBA"), overlay)
                     st.image(gradcam, caption="Grad-CAM placeholder", use_column_width=True)
             else:
                 st.info("Backend not reachable — running local demo prediction.")
-                # local demo prediction
-                species = np.random.choice(["Sardinella longiceps", "Thunnus albacares", "Rastrelliger kanagurta"])
+                species = np.random.choice([
+                    "Sardinella longiceps",
+                    "Thunnus albacares",
+                    "Rastrelliger kanagurta"
+                ])
                 conf = round(float(np.random.uniform(0.65, 0.96)), 2)
                 st.success(f"Predicted (demo): **{species}**")
                 st.write(f"Confidence: **{conf}**")
+
                 overlay = Image.new("RGBA", image.size, (255, 0, 0, 40))
                 gradcam = Image.alpha_composite(image.convert("RGBA"), overlay)
                 st.image(gradcam, caption="Grad-CAM placeholder", use_column_width=True)

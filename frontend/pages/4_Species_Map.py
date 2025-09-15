@@ -4,6 +4,8 @@ import streamlit as st
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
+from frontend import backend_client
+
 
 st.set_page_config(page_title="Species / Occurrences", layout="wide")
 BACKEND = os.environ.get("SIH_BACKEND_URL", "http://127.0.0.1:8000/api/v1").rstrip("/")
@@ -20,33 +22,58 @@ except Exception:
 # ------------------------
 # Helpers
 # ------------------------
-@st.cache_data(ttl=120)
-def fetch_occurrences(limit=1000, bbox=None, date_from=None, date_to=None):
-    params = {}
-    if limit:
-        params["limit"] = limit
-    if bbox:
-        params["bbox"] = bbox
-    if date_from:
-        params["date_from"] = date_from
-    if date_to:
-        params["date_to"] = date_to
+# ------- fetch occurrences (safe, normalized) -------
+@st.cache_data(ttl=60)
+def load_occurrences(limit=500, date_from=None, date_to=None):
     try:
-        r = requests.get(f"{BACKEND}/occurrences", params=params, timeout=10)
-        r.raise_for_status()
-        payload = r.json()
-        if isinstance(payload, dict) and "data" in payload:
-            recs = payload["data"]
-        elif isinstance(payload, list):
-            recs = payload
-        elif isinstance(payload, dict) and "results" in payload:
-            recs = payload["results"]
-        else:
-            recs = payload or []
-        return recs
+        occ = backend_client.fetch_occurrences(limit=limit, date_from=date_from, date_to=date_to)
     except Exception as e:
-        st.warning("Could not fetch occurrences from backend: " + str(e))
-        return []
+        st.warning("Could not fetch occurrences: " + str(e))
+        return pd.DataFrame()
+
+    df = pd.DataFrame(occ)
+
+    # Normalize lat/lon
+    if "decimalLatitude" in df.columns:
+        df = df.rename(columns={"decimalLatitude": "lat", "decimalLongitude": "lon"})
+    elif "latitude" in df.columns:
+        df = df.rename(columns={"latitude": "lat", "longitude": "lon"})
+
+    if "lat" in df.columns:
+        df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+    if "lon" in df.columns:
+        df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+
+    return df
+    # Normalize lat/lon column names and convert to numeric
+    rename_map = {}
+    if "decimalLatitude" in df.columns or "decimalLongitude" in df.columns:
+        rename_map.update({"decimalLatitude": "lat", "decimalLongitude": "lon"})
+    if "latitude" in df.columns and "lat" not in df.columns:
+        rename_map.update({"latitude": "lat", "longitude": "lon"})
+    if rename_map:
+        df = df.rename(columns=rename_map)
+
+    # Convert lat/lon to numeric if they are strings
+    if "lat" in df.columns:
+        df["lat"] = pd.to_numeric(df["lat"], errors="coerce")
+    if "lon" in df.columns:
+        df["lon"] = pd.to_numeric(df["lon"], errors="coerce")
+
+    return df
+
+# Later where map is built:
+from_str = ...
+to_str = ...    # date_to
+
+df = load_occurrences(limit=500, date_from=from_str, date_to=to_str)
+
+# safe dropna
+if not df.empty and {"lat", "lon"}.issubset(df.columns):
+    map_df = df.dropna(subset=["lat", "lon"])
+else:
+    map_df = pd.DataFrame(columns=["lat", "lon"])
+
 
 def normalize_df(recs):
     if not recs:
@@ -82,14 +109,14 @@ with left:
     date_from = st.date_input("From date", value=(datetime.utcnow() - timedelta(days=365)).date())
     date_to = st.date_input("To date", value=datetime.utcnow().date())
     if st.button("Load occurrences"):
-        fetch_occurrences.clear()
-        st.experimental_rerun()
+     load_occurrences.clear()
+    st.experimental_rerun()
 
 with right:
     search_name = st.text_input("Filter species (contains)", value="")
 
 # Load
-recs = fetch_occurrences(limit=limit, bbox=bbox or None, date_from=str(date_from), date_to=str(date_to))
+recs = load_occurrences(limit=limit, date_from=str(date_from), date_to=str(date_to))
 df = normalize_df(recs)
 
 if search_name:
@@ -164,3 +191,9 @@ with st.expander("Show provenance / raw record for a selected occurrence id"):
             st.json(selected)
         else:
             st.write("Occurrence ID not found in current set.")
+
+df = load_occurrences(limit=500, date_from=from_str, date_to=to_str)
+if not df.empty and {"lat", "lon"}.issubset(df.columns):
+    map_df = df.dropna(subset=["lat", "lon"])
+else:
+    map_df = pd.DataFrame(columns=["lat", "lon"])
