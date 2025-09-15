@@ -23,8 +23,7 @@ xarray==2024.7.0
 netCDF4==1.7.1.post2
 
 # Machine learning
-torch==2.7.0
-torchvision==0.22.0
+
 scikit-learn==1.5.2
 opencv-python-headless==4.10.0.84
 matplotlib==3.9.2
