@@ -217,64 +217,133 @@ def show_provenance(df: pd.DataFrame, index: int):
 # ----------------------------
 # Page Implementations
 # ----------------------------
+# Replace the old `page_home()` entirely with this
 def page_home():
-    st.header("Home — Map, Stats & Timeseries")
-    left, right = st.columns((2, 1))
-
+    st.header("Home — Overview")
+    
+    # --------------------------
+    # Backend settings expander
+    # --------------------------
     with st.expander("Backend settings (quick)"):
-        st.text_input("Backend base (SIH_BACKEND_URL)", value=st.session_state.get("SIH_BACKEND_URL", DEFAULT_BACKEND), key="SIH_BACKEND_URL_input")
+        st.text_input(
+            "Backend base (SIH_BACKEND_URL)",
+            value=st.session_state.get("SIH_BACKEND_URL", DEFAULT_BACKEND),
+            key="SIH_BACKEND_URL_input"
+        )
         if st.button("Save Backend URL"):
             set_setting("SIH_BACKEND_URL", st.session_state["SIH_BACKEND_URL_input"])
             st.success("Backend URL updated for this session.")
 
+    # --------------------------
+    # Top metrics
+    # --------------------------
+    col1, col2, col3 = st.columns(3)
+    
+    try:
+        occ_all = backend_get("/occurrences?limit=1000") or []
+        total_occ = len(occ_all) if isinstance(occ_all, list) else (len(occ_all.get("results", [])) if isinstance(occ_all, dict) else 0)
+    except Exception:
+        total_occ = 0
+    col1.metric("Occurrences (sample)", total_occ)
+    
+    try:
+        meas = backend_get("/measurements/recent?limit=200")
+        if meas and isinstance(meas, dict):
+            meas_list = meas.get("measurements", [])
+        elif isinstance(meas, list):
+            meas_list = meas
+        else:
+            meas_list = []
+        sst_latest = meas_list[0]["sst"] if meas_list else None
+    except Exception:
+        meas_list = []
+        sst_latest = None
+    col2.metric("Latest SST (°C)", sst_latest or "-")
+    
+    try:
+        alerts_resp = backend_get("/alerts")
+        alerts_list = alerts_resp.get("alerts") if isinstance(alerts_resp, dict) else (alerts_resp or [])
+        active = sum(1 for a in (alerts_list if isinstance(alerts_list, list) else []) if str(a.get("status","")).lower()=="active")
+    except Exception:
+        active = 0
+    col3.metric("Active alerts", active)
+    
+    st.markdown("---")
+    
+    # --------------------------
+    # SST timeseries
+    # --------------------------
+    st.subheader("SST timeseries (recent)")
+    import plotly.express as px
+    if meas_list:
+        dfm = pd.DataFrame(meas_list)
+        if "timestamp" in dfm.columns:
+            dfm["ts"] = pd.to_datetime(dfm["timestamp"])
+        elif "created_at" in dfm.columns:
+            dfm["ts"] = pd.to_datetime(dfm["created_at"])
+        else:
+            dfm["ts"] = pd.date_range(end=pd.Timestamp.now(), periods=len(dfm))
+        dfm = dfm.sort_values("ts")
+        dfm["sst_roll"] = dfm["sst"].astype(float).rolling(7, min_periods=1).mean()
+        fig = px.line(dfm, x="ts", y=["sst","sst_roll"], labels={"value":"SST (°C)","ts":"time"}, title="Recent SST (from backend)")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("No measurement timeseries available. Use 'Live' mode on Alerts page or run the seed / ingestion scripts.")
+    
+    st.markdown("---")
+    
+    # --------------------------
+    # Occurrences map + summary + CSV
+    # --------------------------
+    st.subheader("Occurrences map & summary")
+    left, right = st.columns((2,1))
+    
     with left:
-        st.subheader("Occurrences map")
         bbox = st.text_input("BBox (minLon,minLat,maxLon,maxLat) — optional", "")
         date_from = st.date_input("From date", value=date.today() - timedelta(days=365))
         date_to = st.date_input("To date", value=date.today())
         load_btn = st.button("Load occurrences")
+        
         if load_btn:
-            df = fetch_occurrences(bbox=bbox if bbox.strip() else None, date_from=str(date_from), date_to=str(date_to))
+            df = fetch_occurrences(
+                bbox=bbox if bbox.strip() else None, 
+                date_from=str(date_from), 
+                date_to=str(date_to)
+            )
             st.session_state["last_occurrences"] = df.to_dict(orient="records")
+        
         df = pd.DataFrame(st.session_state.get("last_occurrences", [])) if st.session_state.get("last_occurrences") else fetch_occurrences()
-
         st.write(f"Showing {len(df)} records")
+        
         if not df.empty:
             center = (df["decimalLatitude"].mean(), df["decimalLongitude"].mean())
         else:
             center = (20.0, 80.0)
+        
         m = create_map(df, center=center, zoom_start=5)
-        map_data = st_folium(m, width=800, height=500)
-
-        # allow user to select a record by index for provenance
+        st_folium(m, width=800, height=500)
+        
+        # Provenance selection
         if not df.empty:
             idx = st.number_input("Select record index to view provenance", min_value=0, max_value=len(df)-1, value=0)
             show_provenance(df, int(idx))
-
+    
     with right:
-        st.subheader("Summary")
-        df2 = df.copy()
-        if not df2.empty and "scientificName" in df2.columns:
-            top = df2["scientificName"].value_counts().nlargest(5)
-            st.write("Top species")
+        st.subheader("Top species")
+        if not df.empty and "scientificName" in df.columns:
+            top = df["scientificName"].value_counts().nlargest(5)
             for s, cnt in top.items():
                 st.write(f"- {s}: {cnt}")
-        st.subheader("SST Timeseries (synthetic)")
-        days = pd.date_range(end=date.today(), periods=60)
-        base = 28 + np.sin(np.linspace(0, 6.28, len(days))) * 0.8
-        sst = base + np.random.RandomState(1).normal(0, 0.2, len(days))
-        df_sst = pd.DataFrame({"date": days, "SST": sst})
-        fig = px.line(df_sst, x="date", y="SST", title="SST (demo)")
-        st.plotly_chart(fig, use_container_width=True)
-        st.markdown("---")
-        st.write("Quick actions")
-        if st.button("Download occurrences CSV (demo)"):
+        
+        st.subheader("Quick actions")
+        if st.button("Download occurrences CSV"):
             if not df.empty:
                 buf = io.StringIO()
                 df.to_csv(buf, index=False)
                 st.download_button("Download CSV", buf.getvalue(), file_name="occurrences.csv", mime="text/csv")
             else:
                 st.info("No data to download.")
+
 
 def page_otoliths():
     st.header("Otolith / Species Classifier")
