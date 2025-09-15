@@ -28,8 +28,7 @@ scikit-learn==1.5.2
 opencv-python-headless==4.10.0.84
 matplotlib==3.9.2
 
-# Explainability
-captum==0.7.0
+
 
 # Alerting
 twilio==9.2.4
