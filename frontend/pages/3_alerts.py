@@ -19,7 +19,8 @@ except Exception:
 
 st.set_page_config(page_title="Alerts & Advisories", layout="wide")
 
-BACKEND = os.environ.get("SIH_BACKEND_URL", "http://localhost:8000/api/v1").rstrip("/")
+BACKEND = os.environ.get("SIH_BACKEND_URL", "").rstrip("/")
+
 
 # ----------------------
 # Helpers
@@ -54,7 +55,7 @@ def synthetic_measurements(n_days: int = 90):
 def run_detector(payload: dict = None):
     """Call backend anomaly check (backend should support POST /alerts/check)."""
     try:
-        r = requests.post(f"{BACKEND}/alerts/check", json=payload or {}, timeout=10)
+        r =backend_client.fetch_alerts (json=payload or {}, timeout=10)
         try:
             return r.json()
         except Exception:

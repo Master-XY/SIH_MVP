@@ -10,7 +10,8 @@ from frontend import backend_client
 
 
 st.set_page_config(page_title="Species / Occurrences", layout="wide")
-BACKEND = os.environ.get("SIH_BACKEND_URL", "http://127.0.0.1:8000/api/v1").rstrip("/")
+BACKEND = os.environ.get("SIH_BACKEND_URL", "").rstrip("/")
+
 
 # Optional nicer map if available
 try:
